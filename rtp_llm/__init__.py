@@ -68,7 +68,6 @@ if os.environ.get("FT_ALOG_CONF_PATH") is None:
 logging.info("init logger end")
 
 import transformers
-
 logging.info(f"transformers version: {transformers.__version__}")
 
 # load th_transformer.so

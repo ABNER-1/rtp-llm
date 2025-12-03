@@ -5,11 +5,11 @@
 """
 
 import argparse
+import datetime
 import os
 from typing import Any, List, Tuple
 
 from rtp_llm.server.server_args.server_args import EnvArgumentParser
-
 
 def get_all_arguments_from_parser(
     parser: EnvArgumentParser,
@@ -212,4 +212,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # measure the initialization time
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    print(f"[PROCESS_START]{current_time} Start generate args")
     main()

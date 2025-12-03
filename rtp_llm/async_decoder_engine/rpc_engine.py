@@ -1,5 +1,6 @@
+import time
+import logging
 from typing import AsyncGenerator, Dict, Optional
-
 from typing_extensions import override
 
 from rtp_llm.async_decoder_engine.base_engine import BaseEngine
@@ -10,6 +11,7 @@ from rtp_llm.models.propose_model.propose_model import ProposeModel
 from rtp_llm.ops import EngineScheduleInfo, KVCacheInfo, WorkerStatusInfo
 from rtp_llm.ops.rtp_llm.rtp_llm_op import RtpLLMOp
 from rtp_llm.utils.mm_process_engine import MMProcessEngine
+from rtp_llm.utils.time_util import timer_wrapper
 
 
 class RPCEngine(BaseEngine):
@@ -32,9 +34,13 @@ class RPCEngine(BaseEngine):
         )
         self.model_rpc_client = ModelRpcClient(self.config)
 
+    @timer_wrapper(description="start async engine")
     @override
     def start(self) -> None:
+        start_time = time.time()
         self.rtp_llm_op_.start()
+        consume_s = time.time() - start_time
+        logging.info(f"start rtp_llm_op_ took {consume_s:.2f}s")
 
     @override
     def stop(self) -> None:

@@ -20,6 +20,7 @@ from rtp_llm.utils.concurrency_controller import (
 
 
 def start_frontend_server(rank_id: int, server_id: int, global_controller: ConcurrencyController):
+    logging.info(f"[PROCESS_START]Start frontend server process")
     ## collect all args and envs.
     py_env_configs = PyEnvConfigs()
     py_env_configs.update_from_env()

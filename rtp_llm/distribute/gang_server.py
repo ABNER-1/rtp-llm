@@ -18,6 +18,7 @@ import torch.distributed
 from rtp_llm.config.py_config_modules import PyEnvConfigs, StaticConfig
 from rtp_llm.config.uvicorn_config import UVICORN_LOGGING_CONFIG
 from rtp_llm.distribute.gang_info import GangInfo, get_gang_info
+from rtp_llm.utils.time_util import timer_wrapper
 
 # for ut
 from rtp_llm.distribute.gang_test_util import create_store, store_based_barrier
@@ -209,7 +210,7 @@ class GangServer:
 
     def _wait_ready(self):
         timeout_minutes = self.py_env_configs.gang_config.gang_timeout_min
-        sleep_time = self.py_env_configs.gang_config.gang_sleep_time
+        sleep_time = self.py_env_configs.gang_config.gang_startup_interval
         start_time = datetime.datetime.now()
         retry_time = 0
         while True:
@@ -410,6 +411,7 @@ class GangServer:
             timeout=timedelta(seconds=timeout),
         )
 
+    @timer_wrapper(description="start gang server")
     def start(self):
         if g_parallel_info.world_size == 1:
             logging.info("world_size==1, do not start gang_server")

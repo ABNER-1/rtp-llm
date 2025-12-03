@@ -9,6 +9,7 @@ from rtp_llm.async_decoder_engine.embedding.embedding_engine import EmbeddingCpp
 from rtp_llm.async_decoder_engine.rpc_engine import RPCEngine
 from rtp_llm.models.base_model import BaseModel
 from rtp_llm.models.propose_model.propose_model import ProposeModel
+from rtp_llm.utils.time_util import timer_wrapper
 
 
 class ExecutorType(Enum):
@@ -21,7 +22,7 @@ def check_exeutor_type(model: BaseModel):
         return ExecutorType.Embedding
     return ExecutorType.Normal
 
-
+@timer_wrapper(description="create async engine")
 def create_engine(
     model: BaseModel, propose_model: Optional[ProposeModel] = None
 ) -> BaseEngine:
