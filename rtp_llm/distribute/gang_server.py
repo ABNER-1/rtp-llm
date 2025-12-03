@@ -28,6 +28,7 @@ from rtp_llm.distribute.worker_info import (
     g_worker_info,
     update_master_info,
 )
+from rtp_llm.utils.time_util import timer_wrapper
 
 
 def http_post_with_retry(
@@ -210,7 +211,7 @@ class GangServer:
 
     def _wait_ready(self):
         timeout_minutes = self.gang_config.gang_timeout_min
-        sleep_time = self.gang_config.gang_sleep_time
+        sleep_time = self.gang_config.gang_startup_interval
         start_time = datetime.datetime.now()
         retry_time = 0
         while True:
@@ -415,6 +416,7 @@ class GangServer:
             timeout=timedelta(seconds=timeout),
         )
 
+    @timer_wrapper(description="start gang server")
     def start(self):
         if g_parallel_info.world_size == 1:
             logging.info("world_size==1, do not start gang_server")

@@ -1,10 +1,12 @@
 import logging
 import os
 from typing import Optional
+import time
 
 from rtp_llm.config.model_args import ModelArgs
 from rtp_llm.config.kv_cache_config import KVCacheConfig
 
+st = time.time()
 from rtp_llm.ops import (
     ArpcConfig,
     CacheStoreConfig,
@@ -27,6 +29,9 @@ from rtp_llm.ops import (
     SpeculativeExecutionConfig,
     VitSeparation,
 )
+consume_s = time.time() - st
+print(f"import rtp_llm.ops took {consume_s:.2f}s")
+
 
 DEFAULT_START_PORT = 8088
 MASTER_INFO_PORT_NUM = 11
@@ -125,6 +130,7 @@ class GangConfig:
         self.distribute_config_file: str = ""
         self.dist_barrier_timeout: Optional[int] = None
         self.gang_sleep_time: int = 10
+        self.gang_startup_interval: float = 0.1
         self.gang_timeout_min: int = 30
         self.json_gang_parts: Optional[str] = None
         self.leader_address: Optional[str] = None
