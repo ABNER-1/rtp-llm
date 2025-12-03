@@ -20,16 +20,20 @@ CUR_PATH = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(str(CUR_PATH), ".."))
 
 from rtp_llm.distribute.worker_info import g_parallel_info, g_worker_info
-from rtp_llm.server.backend_app import BackendApp
-from rtp_llm.server.vit_rpc_server import vit_start_server
 from rtp_llm.utils.concurrency_controller import (
     ConcurrencyController,
     set_global_controller,
 )
-from rtp_llm.utils.util import copy_gemm_config
-
+from rtp_llm.utils.time_util import timer_wrapper
 
 def local_rank_start(global_controller: ConcurrencyController):
+    logging.info(f"[PROCESS_START]Start local rank process")
+
+    start_time = time.time()
+    from rtp_llm.server.backend_app import BackendApp
+    from rtp_llm.utils.util import copy_gemm_config
+    logging.info(f"import BackendApp took {time.time()- start_time:.2f}s")
+
     copy_gemm_config()
     app = None
     ## collect all args and envs.
@@ -86,6 +90,7 @@ def multi_rank_start(global_controller: ConcurrencyController):
     ):
         os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(cuda_device_list)
         os.environ["WORLD_RANK"] = str(world_rank)
+        logging.info(f"[PROCESS_SPAWN]Start local rank outer {world_rank}")
         proc = Process(
             target=local_rank_start,
             args=(global_controller,),
@@ -179,6 +184,7 @@ def clear_jit_filelock():
 
 
 def start_backend_server(global_controller: ConcurrencyController):
+    logging.info(f"[PROCESS_START]Start backend server process")
     setproctitle("rtp_llm_backend_server")
     os.makedirs("logs", exist_ok=True)
     load_gpu_nic_affinity()
@@ -190,6 +196,7 @@ def start_backend_server(global_controller: ConcurrencyController):
     vit_config.update_from_env()
     # TODO(xinfei.sxf) fix this
     if vit_config.vit_separation == 1:
+        from rtp_llm.server.vit_rpc_server import vit_start_server
         return vit_start_server()
 
     if not torch.cuda.is_available():

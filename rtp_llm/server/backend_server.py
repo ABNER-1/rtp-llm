@@ -36,6 +36,8 @@ from rtp_llm.utils.concurrency_controller import (
 from rtp_llm.utils.fuser import _nfs_manager
 from rtp_llm.utils.time_util import Timer
 from rtp_llm.utils.version_info import VersionInfo
+from rtp_llm.utils.time_util import timer_wrapper
+import traceback
 
 StreamObjectType = Union[Dict[str, Any], BaseModel]
 
@@ -129,6 +131,7 @@ class BackendServer(object):
         rep = ORJSONResponse(exception_json, status_code=500)
         return rep
 
+    @timer_wrapper(description="wait workers ready")
     def wait_all_worker_ready(self):
         # master需要等其他所有机器都ready以后才能起服务，挂vipserver
         if g_parallel_info.is_master and g_parallel_info.world_size > 1:
@@ -138,7 +141,7 @@ class BackendServer(object):
                     break
                 except Exception as e:
                     logging.warn("worker not all ready, error_msg: " + str(e))
-                    time.sleep(5)
+                    time.sleep(0.1)
 
     def get_engine_schedule_info(
         self, latest_finished_version: int

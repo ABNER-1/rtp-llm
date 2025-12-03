@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union
+from fastapi.responses import JSONResponse
 
 import aiohttp
 import psutil
@@ -242,20 +243,35 @@ async def async_request_server(
                 async with session.post(url, json=req) as response:
                     return await _handle_response(response)
             else:
-                return {"error": f"Unsupported HTTP method: {method}"}
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": f"Unsupported HTTP method: {method}"}
+                )
     # 明确区分错误类型
     except ClientConnectorError as e:
         # 连接失败（如DNS解析错误、TCP连接拒绝）
-        return {"error": "Connection failed", "details": str(e)}
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Connection failed", "details": str(e)}
+        )
     except ServerTimeoutError as e:
         # 超时错误（连接或响应超时）
-        return {"error": "Request timeout", "details": str(e)}
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Request timeout", "details": str(e)}
+        )
     except aiohttp.ClientError as e:
         # 其他客户端错误（如无效URL、HTTP协议错误）
-        return {"error": "Client error", "details": str(e)}
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Client error", "details": str(e)}
+        )
     except Exception as e:
         # 未知错误
-        return {"error": "Unexpected error", "details": str(e)}
+        return JSONResponse(
+            status_code=500,
+            content= {"error": "Unexpected error", "details": str(e)}
+        )
 
 
 async def _handle_response(response: aiohttp.ClientResponse) -> Dict[str, Any]:

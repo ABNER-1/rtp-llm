@@ -290,6 +290,7 @@ class GangConfig:
         self.distribute_config_file: str = ""
         self.dist_barrier_timeout: Optional[int] = None
         self.gang_sleep_time: int = 10
+        self.gang_startup_interval: float = 0.1
         self.gang_timeout_min: int = 30
         self.json_gang_parts: Optional[str] = None
         self.leader_address: Optional[str] = None
@@ -312,6 +313,9 @@ class GangConfig:
         )
         self.gang_sleep_time = int(
             os.environ.get("GANG_SLEEP_TIME", self.gang_sleep_time)
+        )
+        self.gang_startup_interval = float(
+            os.environ.get("GANG_STARTUP_PERIOD", self.gang_startup_interval)
         )
         self.gang_timeout_min = int(
             os.environ.get("GANG_TIMEOUT_MIN", self.gang_timeout_min)
