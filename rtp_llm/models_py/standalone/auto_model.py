@@ -10,7 +10,12 @@ from transformers import AutoTokenizer
 
 import rtp_llm.models
 from rtp_llm.config.engine_config import EngineConfig
-from rtp_llm.config.py_config_modules import PyEnvConfigs
+from rtp_llm.config.py_config_modules import (
+    DEFAULT_START_PORT,
+    MIN_WORKER_INFO_PORT_NUM,
+    PyEnvConfigs,
+)
+from rtp_llm.distribute.worker_info import MasterInfo, ParallelInfo, WorkerInfo
 from rtp_llm.model_factory import ModelFactory
 from rtp_llm.ops.compute_ops import (
     KVCache,
@@ -23,7 +28,6 @@ from rtp_llm.ops.compute_ops import (
 )
 from rtp_llm.tools.api.hf_model_helper import get_model_info_from_hf
 from rtp_llm.utils.model_weight import W
-
 
 
 class AutoModel:
@@ -47,8 +51,25 @@ class AutoModel:
         if not self.py_env_configs.model_args.tokenizer_path:
             self.py_env_configs.model_args.tokenizer_path = model_path
 
+        # Create parallel_info, worker_info, and master_info for EngineConfig
+        parallel_info = ParallelInfo.from_env(MIN_WORKER_INFO_PORT_NUM)
+        worker_info = WorkerInfo.from_env(
+            parallel_info, DEFAULT_START_PORT, DEFAULT_START_PORT + 1
+        )
+        master_info = MasterInfo(
+            ip="",
+            th_nccl_port=0,
+            tp_nccl_port=0,
+            nccl_op_port=0,
+            sp_gpt_nccl_port=0,
+            dp_tp_nccl_port=0,
+            ffn_tp_nccl_port=0,
+        )
+
         # Create EngineConfig from py_env_configs
-        engine_config = EngineConfig.create(self.py_env_configs)
+        engine_config = EngineConfig.create(
+            self.py_env_configs, parallel_info, worker_info, master_info
+        )
 
         # Create model configs
         model_config = ModelFactory.create_model_config(
@@ -158,7 +179,9 @@ class AutoModel:
             self.size_per_head,
         ]
 
-        kv_cache_total = torch.zeros(kv_shape, dtype=self.compute_dtype, device=self.device)
+        kv_cache_total = torch.zeros(
+            kv_shape, dtype=self.compute_dtype, device=self.device
+        )
         kv_cache_base = kv_cache_total
         self.kv_cache.kv_cache_base = kv_cache_base
 

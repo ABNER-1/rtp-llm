@@ -9,9 +9,14 @@ py_test (
     srcs = ["qwen3_test.py"],
     deps = [
         "//rtp_llm/models_py/standalone:auto_model",
+        "//rtp_llm:testlib",
     ],
     env = test_envs,
     tags = ["H20"],
     exec_properties = {'gpu':'H20'},
+    data = [
+        "//rtp_llm:sdk"
+    ],
+
 )
 

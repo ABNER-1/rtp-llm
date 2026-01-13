@@ -2,7 +2,14 @@ import os
 import unittest
 from unittest.mock import patch
 
-from rtp_llm.distribute.worker_info import ParallelInfo
+import torch
+
+from rtp_llm.config.py_config_modules import MIN_WORKER_INFO_PORT_NUM
+
+torch.cuda.set_device = lambda x: None
+
+
+from rtp_llm.distribute.worker_info import ParallelInfo, WorkerInfo
 
 
 class TestParallelInfo(unittest.TestCase):
@@ -38,52 +45,39 @@ class TestParallelInfo(unittest.TestCase):
 
 
 class TestWorkerInfo(unittest.TestCase):
-    def setUp(self):
-        # Mock g_parallel_info as it is used by WorkerInfo.from_env
-        self.parallel_info_patcher = patch(
-            "rtp_llm.distribute.worker_info.g_parallel_info"
-        )
-        self.mock_parallel_info = self.parallel_info_patcher.start()
-        self.mock_parallel_info.worker_info_port_num = 10
-        self.mock_parallel_info.local_rank = 0
-        self.mock_parallel_info.world_rank = 0
-
-    def tearDown(self):
-        self.parallel_info_patcher.stop()
-
     def test_reload(self):
-        from rtp_llm.distribute.worker_info import WorkerInfo
+        # Create parallel_info and worker_info
+        parallel_info = ParallelInfo.from_env(MIN_WORKER_INFO_PORT_NUM)
+        parallel_info.worker_info_port_num = 10
 
         # Initial WorkerInfo
-        info = WorkerInfo.from_env(start_port=1000, remote_server_port=2000)
-        self.assertEqual(info.server_port, 1000)  # 1000 + 0 * 10
-
-        # Change parallel info to simulate environment change effect on calculation
-        self.mock_parallel_info.local_rank = 1
+        info = WorkerInfo.from_env(
+            parallel_info, start_port=1000, remote_server_port=2000
+        )
+        initial_port = info.server_port
 
         # Reload with new ports
-        info.reload(start_port=3000, remote_server_port=4000)
+        info.reload(parallel_info, start_port=3000, remote_server_port=4000)
 
-        # Verify updates
-        expected_info = WorkerInfo.from_env(start_port=3000, remote_server_port=4000)
-        self.assertEqual(info, expected_info)
+        # Verify updates - server_port should change
+        self.assertEqual(info.server_port, 3000)
+        self.assertNotEqual(info.server_port, initial_port)
 
 
 class TestUpdateWorkerInfo(unittest.TestCase):
-    @patch("rtp_llm.distribute.worker_info.g_worker_info")
-    @patch("rtp_llm.distribute.worker_info.g_parallel_info")
-    def test_update_worker_info(self, mock_parallel_info, mock_worker_info):
-        from rtp_llm.distribute.worker_info import update_worker_info
+    def test_update_worker_info(self):
+        # Test that reload updates worker_info correctly
+        parallel_info = ParallelInfo.from_env(MIN_WORKER_INFO_PORT_NUM)
+        worker_info = WorkerInfo.from_env(
+            parallel_info, start_port=1000, remote_server_port=2000
+        )
 
-        start_port = 1000
-        worker_info_port_num = 20
-        remote_server_port = 3000
+        initial_server_port = worker_info.server_port
 
-        update_worker_info(start_port, worker_info_port_num, remote_server_port)
+        # Reload with new ports
+        parallel_info.reload(worker_info_port_num=20)
+        worker_info.reload(parallel_info, start_port=3000, remote_server_port=4000)
 
-        mock_parallel_info.reload.assert_called_once_with(worker_info_port_num)
-        mock_worker_info.reload.assert_called_once_with(start_port, remote_server_port)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        # Verify that server_port was updated
+        self.assertNotEqual(worker_info.server_port, initial_server_port)
+        self.assertEqual(worker_info.server_port, 3000)

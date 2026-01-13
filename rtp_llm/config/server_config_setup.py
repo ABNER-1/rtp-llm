@@ -5,7 +5,7 @@ import os
 import torch
 
 from rtp_llm.config.py_config_modules import PyEnvConfigs
-from rtp_llm.distribute.worker_info import g_parallel_info, update_worker_info
+from rtp_llm.distribute.worker_info import ParallelInfo, WorkerInfo
 from rtp_llm.model_factory_register import ModelDict
 from rtp_llm.ops import RoleType
 from rtp_llm.utils.fuser import fetch_remote_file_to_local
@@ -14,7 +14,7 @@ from rtp_llm.utils.fuser import fetch_remote_file_to_local
 def auto_configure_deepep(
     moe_config,
     deep_ep_config,
-    g_parallel_info,
+    parallel_info: ParallelInfo,
     role_type: RoleType,
 ):
     """
@@ -27,7 +27,7 @@ def auto_configure_deepep(
     Args:
         moe_config: MoeConfig object to modify
         deep_ep_config: DeepEPConfig object containing user-specified values (may be None)
-        g_parallel_info: ParallelInfo object containing parallelism information
+        parallel_info: ParallelInfo object containing parallelism information
         role_type: Role type (PREFILL, DECODE, or PDFUSION)
 
     Note: USE_ALL_GATHER should be enabled for pure TP scenarios (ep_size == tp_size).
@@ -45,13 +45,14 @@ def auto_configure_deepep(
     - PD separation + Decode node + Multi-node multi-GPU (>=9 GPUs): 1, 1, 1
     """
 
-    tp_size = g_parallel_info.tp_size
-    ep_size = g_parallel_info.ep_size
+    tp_size = parallel_info.tp_size
+    ep_size = parallel_info.ep_size
 
     moe_config.use_all_gather = (
         moe_config.use_all_gather
         and not deep_ep_config.use_deepep_low_latency
-        and ep_size == tp_size)
+        and ep_size == tp_size
+    )
 
     if moe_config.use_all_gather:
         moe_config.use_deepep_moe = False
@@ -72,9 +73,9 @@ def auto_configure_deepep(
         # All are None, use auto configuration
         _apply_auto_deepep_config(
             moe_config=moe_config,
-            world_size=g_parallel_info.world_size,
-            local_world_size=g_parallel_info.local_world_size,
-            tp_size=g_parallel_info.tp_size,
+            world_size=parallel_info.world_size,
+            local_world_size=parallel_info.local_world_size,
+            tp_size=parallel_info.tp_size,
             role_type=role_type,
         )
     else:
@@ -280,7 +281,11 @@ def fetch_model_files_to_local(py_env_configs: PyEnvConfigs):
     )
 
 
-def setup_and_configure_server(py_env_configs: PyEnvConfigs):
+def setup_and_configure_server(
+    py_env_configs: PyEnvConfigs,
+    parallel_info: ParallelInfo,
+    worker_info: WorkerInfo,
+):
     """
     Setup default arguments, fetch model files, update worker info, and configure DeepEP.
 
@@ -292,18 +297,20 @@ def setup_and_configure_server(py_env_configs: PyEnvConfigs):
 
     Args:
         py_env_configs: PyEnvConfigs object to configure
+        parallel_info: ParallelInfo object (created if None)
+        worker_info: WorkerInfo object (created if None)
     """
     setup_default_args(py_env_configs)
     fetch_model_files_to_local(py_env_configs)
-    update_worker_info(
+    parallel_info.reload(py_env_configs.server_config.worker_info_port_num)
+    worker_info.reload(
+        parallel_info,
         py_env_configs.server_config.start_port,
-        py_env_configs.server_config.worker_info_port_num,
         py_env_configs.distribute_config.remote_server_port,
     )
-
     auto_configure_deepep(
         moe_config=py_env_configs.moe_config,
         deep_ep_config=py_env_configs.deep_ep_config,
-        g_parallel_info=g_parallel_info,
+        parallel_info=parallel_info,
         role_type=py_env_configs.role_config.role_type,
     )

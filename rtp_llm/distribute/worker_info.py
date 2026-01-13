@@ -45,7 +45,6 @@ class ParallelInfo(object):
         self.world_rank = world_rank
         self.local_world_size = local_world_size
         self.worker_info_port_num = int(worker_info_port_num)
-
         logging.info(f"ParallelInfo worker_info_port_num: {self.worker_info_port_num}")
 
         if self.worker_info_port_num < MIN_WORKER_INFO_PORT_NUM:
@@ -265,10 +264,10 @@ class WorkerInfo(object):
         )
 
     @staticmethod
-    def from_env(start_port, remote_server_port):
-        worker_info_port_num = g_parallel_info.worker_info_port_num
-        local_rank = g_parallel_info.local_rank
-        world_rank = g_parallel_info.world_rank
+    def from_env(parallel_info, start_port, remote_server_port):
+        worker_info_port_num = parallel_info.worker_info_port_num
+        local_rank = parallel_info.local_rank
+        world_rank = parallel_info.world_rank
 
         info = WorkerInfo(
             ip=socket.gethostbyname(socket.gethostname()),
@@ -386,12 +385,13 @@ class WorkerInfo(object):
             + 7
         )
 
-    def reload(self, start_port, remote_server_port):
-        # Use g_parallel_info.local_rank and g_parallel_info.world_rank instead of
+    def reload(self, parallel_info, start_port, remote_server_port):
+        # Use parallel_info.local_rank and parallel_info.world_rank instead of
         # self.local_rank/self.world_rank, because in multi-process scenarios,
-        # g_parallel_info is reloaded from environment variables and reflects the
+        # parallel_info is reloaded from environment variables and reflects the
         # correct rank for the current process.
         new_info = self.from_env(
+            parallel_info,
             start_port,
             remote_server_port,
         )
@@ -442,49 +442,25 @@ class MasterInfo:
     ffn_tp_nccl_port: int
 
 
-g_master_info = MasterInfo(
-    ip="",
-    th_nccl_port=0,
-    tp_nccl_port=0,
-    nccl_op_port=0,
-    sp_gpt_nccl_port=0,
-    dp_tp_nccl_port=0,
-    ffn_tp_nccl_port=0,
-)
-
-
-def update_master_info(ip: str, base_port: int):
-    g_master_info.ip = ip
-    g_master_info.dp_tp_nccl_port = base_port - 10
-    g_master_info.th_nccl_port = base_port - 11
-    base_port -= g_parallel_info.dp_rank * MASTER_INFO_PORT_NUM
-    g_master_info.tp_nccl_port = base_port - 2
-    g_master_info.nccl_op_port = base_port - 3
-    g_master_info.sp_gpt_nccl_port = base_port - 4
-    # note: reserve 4 ports for ffn_tp_nccl_port
-    g_master_info.ffn_tp_nccl_port = base_port - 5
-    if g_parallel_info.ffn_sp_size != g_parallel_info.tp_size:
-        base_port -= g_parallel_info.ffn_sp_size
-    logging.info(f"g_master_info: {g_master_info}")
-
-
-def total_need_port_num() -> int:
-    return (
-        MASTER_INFO_PORT_NUM * g_parallel_info.dp_size
-        + g_parallel_info.worker_info_port_num * g_parallel_info.tp_size
-    )
-
-
-# Initialize global variables after class definitions
-g_parallel_info = ParallelInfo.from_env(MIN_WORKER_INFO_PORT_NUM)
-g_worker_info = WorkerInfo.from_env(
-    start_port=0,
-    remote_server_port=0,
-)
-
-
-def update_worker_info(
-    start_port: int, worker_info_port_num: int, remote_server_port: int
+def update_master_info(
+    master_info: MasterInfo, parallel_info: ParallelInfo, ip: str, base_port: int
 ):
-    g_parallel_info.reload(worker_info_port_num)
-    g_worker_info.reload(start_port, remote_server_port)
+    master_info.ip = ip
+    master_info.dp_tp_nccl_port = base_port - 10
+    master_info.th_nccl_port = base_port - 11
+    base_port -= parallel_info.dp_rank * MASTER_INFO_PORT_NUM
+    master_info.tp_nccl_port = base_port - 2
+    master_info.nccl_op_port = base_port - 3
+    master_info.sp_gpt_nccl_port = base_port - 4
+    # note: reserve 4 ports for ffn_tp_nccl_port
+    master_info.ffn_tp_nccl_port = base_port - 5
+    if parallel_info.ffn_sp_size != parallel_info.tp_size:
+        base_port -= parallel_info.ffn_sp_size
+    logging.info(f"master_info: {master_info}")
+
+
+def total_need_port_num(parallel_info: ParallelInfo) -> int:
+    return (
+        MASTER_INFO_PORT_NUM * parallel_info.dp_size
+        + parallel_info.worker_info_port_num * parallel_info.tp_size
+    )

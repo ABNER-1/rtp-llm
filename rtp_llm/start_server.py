@@ -16,13 +16,14 @@ sys.path.append(os.path.join(str(CUR_PATH), ".."))
 from rtp_llm.config.log_config import setup_logging
 from rtp_llm.config.py_config_modules import PyEnvConfigs
 from rtp_llm.config.server_config_setup import setup_and_configure_server
-from rtp_llm.distribute.worker_info import WorkerInfo, g_parallel_info, g_worker_info, update_worker_info
+from rtp_llm.distribute.worker_info import MasterInfo, ParallelInfo, WorkerInfo
 from rtp_llm.ops import RoleType
 from rtp_llm.server.server_args.server_args import setup_args
-from rtp_llm.utils.concurrency_controller import init_controller
+from rtp_llm.utils.concurrency_controller import ConcurrencyController, init_controller
 from rtp_llm.utils.process_manager import ProcessManager
 
 setup_logging()
+
 
 def check_server_health(server_port):
     try:
@@ -40,15 +41,25 @@ def check_server_health(server_port):
 
 @timer_wrapper(description="start backend server")
 def start_backend_server_impl(
-    global_controller,
+    global_controller: ConcurrencyController,
     py_env_configs: PyEnvConfigs,
+    parallel_info: ParallelInfo,
+    worker_info: WorkerInfo,
+    master_info: MasterInfo,
     process_manager: ProcessManager = None,
 ):
     from rtp_llm.start_backend_server import start_backend_server
 
     # only for debug
     if py_env_configs.profiling_debug_logging_config.debug_load_server:
-        start_backend_server(global_controller, py_env_configs, None)
+        start_backend_server(
+            global_controller,
+            py_env_configs,
+            parallel_info,
+            worker_info,
+            master_info,
+            None,
+        )
         os._exit(-1)
 
     # Create pipe for subprocess startup status communication
@@ -57,7 +68,14 @@ def start_backend_server_impl(
 
     backend_process = multiprocessing.Process(
         target=start_backend_server,
-        args=(global_controller, py_env_configs, pipe_writer),
+        args=(
+            global_controller,
+            py_env_configs,
+            parallel_info,
+            worker_info,
+            master_info,
+            pipe_writer,
+        ),
         name="backend_manager",
     )
     backend_process.start()
@@ -121,6 +139,9 @@ def start_backend_server_impl(
 def start_frontend_server_impl(
     global_controller,
     py_env_configs: PyEnvConfigs,
+    parallel_info,
+    worker_info,
+    master_info: MasterInfo,
     process_manager=None,
 ):
     from rtp_llm.start_frontend_server import start_frontend_server
@@ -134,7 +155,7 @@ def start_frontend_server_impl(
     frontend_processes = []
 
     # tmp code
-    local_world_size = g_parallel_info.world_size
+    local_world_size = parallel_info.local_world_size
     if "LOCAL_WORLD_SIZE" in os.environ:
         logging.info(
             f"multi rank starts with local world size specified in env: {os.environ['LOCAL_WORLD_SIZE']}"
@@ -142,7 +163,7 @@ def start_frontend_server_impl(
         local_world_size = int(os.environ["LOCAL_WORLD_SIZE"])
     else:
         logging.info(
-            f"multi rank starts with default local world size: {local_world_size}, world size = {g_parallel_info.world_size}"
+            f"multi rank starts with default local world size: {local_world_size}, world size = {parallel_info.world_size}"
         )
 
     for rank in range(local_world_size):
@@ -152,7 +173,15 @@ def start_frontend_server_impl(
             )
             process = multiprocessing.Process(
                 target=start_frontend_server,
-                args=(rank, i, global_controller, py_env_configs),
+                args=(
+                    rank,
+                    i,
+                    global_controller,
+                    py_env_configs,
+                    parallel_info,
+                    worker_info,
+                    master_info,
+                ),
                 name=f"frontend_server_{i}",
             )
             frontend_processes.append(process)
@@ -175,12 +204,33 @@ def start_frontend_server_impl(
 
 def main():
     py_env_configs: PyEnvConfigs = setup_args()
-    setup_and_configure_server(py_env_configs)
-    start_server(py_env_configs)
+    from rtp_llm.config.py_config_modules import MIN_WORKER_INFO_PORT_NUM
+
+    # Create parallel_info and worker_info early
+    parallel_info = ParallelInfo.from_env(MIN_WORKER_INFO_PORT_NUM)
+    worker_info = WorkerInfo.from_env(parallel_info, 0, 0)
+
+    master_info = MasterInfo(
+        ip="",
+        th_nccl_port=0,
+        tp_nccl_port=0,
+        nccl_op_port=0,
+        sp_gpt_nccl_port=0,
+        dp_tp_nccl_port=0,
+        ffn_tp_nccl_port=0,
+    )
+    setup_and_configure_server(py_env_configs, parallel_info, worker_info)
+    start_server(py_env_configs, parallel_info, worker_info, master_info)
 
 
-def start_server(py_env_configs: PyEnvConfigs):
+def start_server(
+    py_env_configs: PyEnvConfigs,
+    parallel_info: ParallelInfo,
+    worker_info: WorkerInfo,
+    master_info: MasterInfo,
+):
     logging.info(f"[PROCESS_START]Start server")
+
     start_time = time.time()
     try:
         multiprocessing.set_start_method("spawn")
@@ -188,7 +238,7 @@ def start_server(py_env_configs: PyEnvConfigs):
         logging.warning(str(e))
 
     global_controller = init_controller(
-        py_env_configs.concurrency_config, dp_size=g_parallel_info.dp_size
+        py_env_configs.concurrency_config, dp_size=parallel_info.dp_size
     )
 
     # Create process manager with config values
@@ -202,28 +252,41 @@ def start_server(py_env_configs: PyEnvConfigs):
     # Get number of nodes
     try:
         world_info = get_world_info(
-            py_env_configs.server_config, py_env_configs.distribute_config
+            py_env_configs.server_config,
+            py_env_configs.distribute_config,
+            parallel_info,
+            worker_info,
         )
         num_nodes = world_info.num_nodes
     except Exception:
         # If get_world_info fails, estimate from world_size
         # Assuming 8 GPUs per node
-        num_nodes = (g_parallel_info.world_size + 7) // 8
+        num_nodes = (parallel_info.world_size + 7) // 8
         logging.info(
-            f"Failed to get world_info, estimated num_nodes={num_nodes} from world_size={g_parallel_info.world_size}"
+            f"Failed to get world_info, estimated num_nodes={num_nodes} from world_size={parallel_info.world_size}"
         )
 
     try:
         if py_env_configs.role_config.role_type != RoleType.FRONTEND:
             logging.info("start backend server")
             backend_process = start_backend_server_impl(
-                global_controller, py_env_configs, process_manager
+                global_controller,
+                py_env_configs,
+                parallel_info,
+                worker_info,
+                master_info,
+                process_manager,
             )
             process_manager.add_process(backend_process)
 
         logging.info("start frontend server")
         frontend_process = start_frontend_server_impl(
-            global_controller, py_env_configs, process_manager
+            global_controller,
+            py_env_configs,
+            parallel_info,
+            worker_info,
+            master_info,
+            process_manager,
         )
         process_manager.add_processes(frontend_process)
 

@@ -7,6 +7,7 @@ import traceback
 from setproctitle import setproctitle
 
 from rtp_llm.config.py_config_modules import PyEnvConfigs
+from rtp_llm.distribute.worker_info import FrontendServerInfo, MasterInfo
 
 CUR_PATH = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(str(CUR_PATH), ".."))
@@ -26,13 +27,16 @@ def start_frontend_server(
     server_id: int,
     global_controller: ConcurrencyController,
     py_env_configs: PyEnvConfigs,
+    parallel_info,
+    worker_info,
+    master_info: MasterInfo,
 ):
     # Set rank_id and server_id on the passed config
     logging.info(
         f"[PROCESS_START]Start frontend server process rank_{rank_id}_server_{server_id}"
     )
     start_time = time.time()
-    from rtp_llm.distribute.worker_info import FrontendServerInfo, update_worker_info
+
     from rtp_llm.frontend.frontend_app import FrontendApp
 
     if rank_id == 0 and server_id == 0:
@@ -44,16 +48,19 @@ def start_frontend_server(
     g_frontend_server_info = FrontendServerInfo(
         py_env_configs.server_config.frontend_server_id
     )
-    update_worker_info(
+    parallel_info.reload(py_env_configs.server_config.worker_info_port_num)
+    worker_info.reload(
+        parallel_info,
         py_env_configs.server_config.start_port,
-        py_env_configs.server_config.worker_info_port_num,
         py_env_configs.distribute_config.remote_server_port,
     )
     try:
         logging.info(f"g_frontend_server_info = {g_frontend_server_info}")
         set_global_controller(global_controller)
         separated_frontend = py_env_configs.role_config.role_type == RoleType.FRONTEND
-        app = FrontendApp(py_env_configs, separated_frontend)
+        app = FrontendApp(
+            py_env_configs, parallel_info, worker_info, master_info, separated_frontend
+        )
         app.start()
     except BaseException as e:
         logging.error(

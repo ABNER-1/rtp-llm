@@ -28,12 +28,16 @@ py_test(
     env = {"GPU_COUNT": "2"},
 )
 
+
 py_test(
     name = "worker_info_test",
     srcs = [
-        "worker_info_test.py"
+        "worker_info_test.py",
+    ],
+    data = [
+        "//rtp_llm:sdk"
     ],
     deps = [
-        "//rtp_llm:rtp_llm_lib",
+        "//rtp_llm:testlib",
     ],
 )

@@ -3,8 +3,8 @@ Standard: Cpp11
 AccessModifierOffset: -4
 AlignAfterOpenBracket: Align
 AllowShortEnumsOnASingleLine: false
-AlignConsecutiveAssignments: true
-AlignConsecutiveDeclarations: true
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
 AlignEscapedNewlines: Right
 AlignOperands: true
 AlignTrailingComments: true

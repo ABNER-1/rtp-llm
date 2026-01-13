@@ -20,13 +20,10 @@ from rtp_llm.config.engine_config import EngineConfig, update_worker_addrs
 from rtp_llm.config.log_config import get_log_path
 from rtp_llm.config.py_config_modules import PyEnvConfigs
 from rtp_llm.distribute.distributed_server import DistributedServer, get_world_info
-from rtp_llm.distribute.worker_info import g_parallel_info
+from rtp_llm.distribute.worker_info import ParallelInfo, WorkerInfo
 from rtp_llm.metrics import AccMetrics, GaugeMetrics, kmonitor
 from rtp_llm.model_factory import ModelFactory
 from rtp_llm.models_py.distributed.collective_torch import init_distributed_environment
-from rtp_llm.ops import TaskType
-from rtp_llm.server.backend_rpc_server_visitor import BackendRPCServerVisitor
-from rtp_llm.server.misc import format_exception
 from rtp_llm.utils.concurrency_controller import (
     ConcurrencyException,
     get_global_controller,
@@ -39,19 +36,32 @@ USAGE_HEADER = "USAGE"
 
 
 class BackendManager(object):
-    def __init__(self, py_env_configs: PyEnvConfigs):
+    def __init__(
+        self,
+        py_env_configs: PyEnvConfigs,
+        parallel_info: ParallelInfo,
+        worker_info: WorkerInfo,
+        master_info,
+    ):
+        from rtp_llm.distribute.worker_info import MasterInfo
+
         self._access_logger = AccessLogger(
             get_log_path(),
             py_env_configs.profiling_debug_logging_config.log_file_backup_count,
             py_env_configs.server_config.rank_id,
             py_env_configs.server_config.frontend_server_id,
         )
-        self._distributed_server = DistributedServer(py_env_configs)
+        self._distributed_server = DistributedServer(
+            py_env_configs, parallel_info, worker_info, master_info
+        )
+        self.parallel_info = parallel_info
+        self.worker_info = worker_info
+        self.master_info = master_info
 
         self.thread_lock_ = threading.Lock()
         self._global_controller = get_global_controller()
         # just rank 0 report metric
-        if g_parallel_info.world_rank == 0:
+        if parallel_info.world_rank == 0:
             kmonitor.init()
         self.engine: Optional[BaseEngine] = None
         self.py_env_configs = py_env_configs
@@ -59,10 +69,14 @@ class BackendManager(object):
 
     def start(self):
         """Initialize backend server without entering service loop"""
-        self._distributed_server.start(self.py_env_configs)
+        self._distributed_server.start(
+            self.py_env_configs, self.parallel_info, self.worker_info
+        )
 
         # Create EngineConfig from py_env_configs (new unified entry)
-        engine_config = EngineConfig.create(self.py_env_configs)
+        engine_config = EngineConfig.create(
+            self.py_env_configs, self.parallel_info, self.worker_info, self.master_info
+        )
 
         if engine_config.parallelism_config.world_size > 1:
             init_distributed_environment(
@@ -71,7 +85,10 @@ class BackendManager(object):
                 timeout=self.py_env_configs.distribute_config.dist_comm_timeout,
             )
         world_info = get_world_info(
-            self.py_env_configs.server_config, self.py_env_configs.distribute_config
+            self.py_env_configs.server_config,
+            self.py_env_configs.distribute_config,
+            self.parallel_info,
+            self.worker_info,
         )
         update_worker_addrs(
             engine_config.runtime_config,

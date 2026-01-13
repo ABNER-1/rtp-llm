@@ -5,12 +5,14 @@ from unittest import TestCase, main
 
 from pydantic import BaseModel
 
+from rtp_llm.config.py_config_modules import MIN_WORKER_INFO_PORT_NUM, PyEnvConfigs
+from rtp_llm.distribute.worker_info import MasterInfo, ParallelInfo, WorkerInfo
 from rtp_llm.frontend.frontend_server import FrontendServer
-from rtp_llm.config.py_config_modules import PyEnvConfigs
 from rtp_llm.utils.complete_response_async_generator import (
     CompleteResponseAsyncGenerator,
 )
 from rtp_llm.utils.concurrency_controller import init_controller, set_global_controller
+
 
 class FakePipelinResponse(BaseModel):
     res: str
@@ -43,8 +45,28 @@ class FrontendServerTest(TestCase):
         super().__init__(*args, **kwargs)
         # Create PyEnvConfigs with default values for testing
         py_env_configs = PyEnvConfigs()
-        set_global_controller(init_controller(py_env_configs.concurrency_config))
-        self.frontend_server = FrontendServer(py_env_configs=py_env_configs)
+        set_global_controller(
+            init_controller(py_env_configs.concurrency_config, dp_size=1)
+        )
+        parallel_info = ParallelInfo.from_env(MIN_WORKER_INFO_PORT_NUM)
+        worker_info = WorkerInfo.from_env(parallel_info, 0, 0)
+        master_info = MasterInfo(
+            ip="",
+            th_nccl_port=0,
+            tp_nccl_port=0,
+            nccl_op_port=0,
+            sp_gpt_nccl_port=0,
+            dp_tp_nccl_port=0,
+            ffn_tp_nccl_port=0,
+        )
+        self.frontend_server = FrontendServer(
+            rank_id=0,
+            server_id=0,
+            parallel_info=parallel_info,
+            worker_info=worker_info,
+            master_info=master_info,
+            py_env_configs=py_env_configs,
+        )
         self.frontend_server._frontend_worker = FakeFrontendWorker()
 
     async def _async_run(self, *args: Any, **kwargs: Any):

@@ -8,12 +8,7 @@ from rtp_llm.config.py_config_modules import (
     LoadConfig,
     PyEnvConfigs,
 )
-from rtp_llm.distribute.worker_info import (
-    ParallelInfo,
-    g_master_info,
-    g_parallel_info,
-    g_worker_info,
-)
+from rtp_llm.distribute.worker_info import MasterInfo, ParallelInfo, WorkerInfo
 from rtp_llm.ops import (
     ArpcConfig,
     CacheStoreConfig,
@@ -178,7 +173,12 @@ class EngineConfig:
         return "\n".join(lines)
 
     @staticmethod
-    def create(py_env_configs: PyEnvConfigs) -> "EngineConfig":
+    def create(
+        py_env_configs: PyEnvConfigs,
+        parallel_info: ParallelInfo,
+        worker_info: WorkerInfo,
+        master_info: MasterInfo,
+    ) -> "EngineConfig":
         """Create and fully initialize EngineConfig from py_env_configs.
 
         This method creates the EngineConfig dataclass and performs necessary
@@ -197,9 +197,12 @@ class EngineConfig:
 
         # Create ParallelismConfig and setup from parallel_info
         parallelism_config = ParallelismConfig()
+
         setup_parallelism_config(
             parallelism_config,
-            g_parallel_info,
+            parallel_info,
+            worker_info,
+            master_info,
             py_env_configs.ffn_disaggregate_config,
         )
 
@@ -259,6 +262,7 @@ class EngineConfig:
         setup_pd_sep_config(
             engine_config.pd_sep_config,
             cache_store_config,
+            worker_info,
         )
 
         return engine_config
@@ -271,7 +275,9 @@ class EngineConfig:
 
 def setup_parallelism_config(
     parallelism_config: ParallelismConfig,
-    parallel_info: ParallelInfo = g_parallel_info,
+    parallel_info: ParallelInfo,
+    worker_info: WorkerInfo,
+    master_info: MasterInfo,
     py_ffn_disaggregate_config: Optional[FfnDisAggregateConfig] = None,
 ) -> None:
     """Setup ParallelismConfig from parallel_info and master/worker info.
@@ -301,16 +307,16 @@ def setup_parallelism_config(
     parallelism_config.ffn_sp_size = parallel_info.ffn_sp_size
 
     # Set port and IP related fields
-    parallelism_config.nccl_ip = g_master_info.ip
-    parallelism_config.tp_nccl_port = g_master_info.tp_nccl_port
-    parallelism_config.dp_tp_nccl_port = g_master_info.dp_tp_nccl_port
-    parallelism_config.ffn_tp_nccl_port = g_master_info.ffn_tp_nccl_port
-    parallelism_config.model_rpc_port = g_worker_info.rpc_server_port
-    parallelism_config.embedding_rpc_server_port = (
-        g_worker_info.embedding_rpc_server_port
-    )
-    parallelism_config.http_port = g_worker_info.http_port
-    parallelism_config.th_nccl_port = g_master_info.th_nccl_port
+
+    parallelism_config.nccl_ip = master_info.ip
+    parallelism_config.tp_nccl_port = master_info.tp_nccl_port
+    parallelism_config.dp_tp_nccl_port = master_info.dp_tp_nccl_port
+    parallelism_config.ffn_tp_nccl_port = master_info.ffn_tp_nccl_port
+    parallelism_config.th_nccl_port = master_info.th_nccl_port
+
+    parallelism_config.model_rpc_port = worker_info.rpc_server_port
+    parallelism_config.embedding_rpc_server_port = worker_info.embedding_rpc_server_port
+    parallelism_config.http_port = worker_info.http_port
 
     # Setup FfnDisAggregateConfig if it's a member of ParallelismConfig
     # Note: This assumes ParallelismConfig has ffn_disaggregate_config as a member
@@ -379,18 +385,19 @@ def update_worker_addrs(
 def setup_pd_sep_config(
     pd_sep_config: PDSepConfig,
     cache_store_config,
+    worker_info: WorkerInfo,
 ) -> None:
     """Setup PDSepConfig from worker info and cache_store_config."""
     # Update pd_sep_config fields
-    pd_sep_config.cache_store_listen_port = g_worker_info.cache_store_listen_port
-    pd_sep_config.cache_store_connect_port = g_worker_info.cache_store_connect_port
+    pd_sep_config.cache_store_listen_port = worker_info.cache_store_listen_port
+    pd_sep_config.cache_store_connect_port = worker_info.cache_store_connect_port
     pd_sep_config.cache_store_rdma_listen_port = (
-        g_worker_info.cache_store_rdma_listen_port
+        worker_info.cache_store_rdma_listen_port
     )
     pd_sep_config.cache_store_rdma_connect_port = (
-        g_worker_info.cache_store_rdma_connect_port
+        worker_info.cache_store_rdma_connect_port
     )
-    pd_sep_config.remote_rpc_server_port = g_worker_info.remote_rpc_server_port
+    pd_sep_config.remote_rpc_server_port = worker_info.remote_rpc_server_port
     pd_sep_config.worker_port_offset = WORKER_INFO_PORT_NUM
 
     # Override with values from other sources

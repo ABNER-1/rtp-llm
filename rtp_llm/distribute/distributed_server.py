@@ -17,12 +17,12 @@ from rtp_llm.config.py_config_modules import (
     ServerConfig,
 )
 from rtp_llm.distribute.worker_info import (
+    MasterInfo,
+    ParallelInfo,
     WorkerInfo,
-    g_master_info,
-    g_parallel_info,
-    g_worker_info,
     update_master_info,
 )
+
 
 @dataclass
 class WorldInfo:
@@ -51,6 +51,8 @@ _registry_rank_address_key = "registry_rank_address_"
 def get_world_info(
     server_config: ServerConfig,
     distribute_config: DistributeConfig,
+    parallel_info: ParallelInfo,
+    worker_info: WorkerInfo,
 ) -> WorldInfo:
     global _g_world_info
     if _g_world_info is None:
@@ -59,18 +61,21 @@ def get_world_info(
             "Call start() after all ranks are ready."
         )
 
-    if g_parallel_info.world_size == 1:
+    # For single world size, return a simple WorldInfo
+    if parallel_info.world_size == 1:
         return WorldInfo(
-            members=[g_worker_info],
-            self=g_worker_info,
-            master=g_worker_info,
+            members=[worker_info],
+            self=worker_info,
+            master=worker_info,
             num_nodes=1,
             initialized=True,
         )
 
     # frontend 获取本机信息
     if len(_g_world_info.members) == 0 and not _g_world_info.initialized:
-        return get_local_world_info(server_config, distribute_config)
+        return get_local_world_info(
+            server_config, distribute_config, parallel_info, worker_info
+        )
 
     return _g_world_info
 
@@ -78,23 +83,25 @@ def get_world_info(
 def get_local_world_info(
     server_config: ServerConfig,
     distribute_config: DistributeConfig,
+    parallel_info: ParallelInfo,
+    worker_info: WorkerInfo,
 ) -> WorldInfo:
     num_nodes = (
-        g_parallel_info.world_size + g_parallel_info.local_world_size - 1
-    ) // g_parallel_info.local_world_size
+        parallel_info.world_size + parallel_info.local_world_size - 1
+    ) // parallel_info.local_world_size
     all_members: List[WorkerInfo] = []
-    for local_rank in range(g_parallel_info.local_world_size):
+    for local_rank in range(parallel_info.local_world_size):
         logging.info(
-            f"get_local_world_info local_world_size: {g_parallel_info.local_world_size} local_rank: {local_rank}"
+            f"get_local_world_info local_world_size: {parallel_info.local_world_size} local_rank: {local_rank}"
         )
         rank = (
-            g_parallel_info.world_rank
-            // g_parallel_info.local_world_size
-            * g_parallel_info.local_world_size
+            parallel_info.world_rank
+            // parallel_info.local_world_size
+            * parallel_info.local_world_size
             + local_rank
         )
         new_member = WorkerInfo(
-            ip=g_worker_info.ip,
+            ip=worker_info.ip,
             server_port=WorkerInfo.server_port_offset(
                 local_rank, server_config.start_port, server_config.worker_info_port_num
             ),
@@ -137,7 +144,7 @@ def get_local_world_info(
 
     return WorldInfo(
         members=all_members,
-        self=g_worker_info,
+        self=worker_info,
         master=None,
         num_nodes=num_nodes,
         initialized=True,
@@ -148,38 +155,48 @@ class DistributedServer(object):
     def __init__(
         self,
         py_env_configs: PyEnvConfigs,
+        parallel_info: ParallelInfo,
+        worker_info: WorkerInfo,
+        master_info: MasterInfo,
         rank: int = -1,
         world_size: int = -1,
         wait_for_workers=True,
     ):
+        self.parallel_info = parallel_info
+        self.worker_info = worker_info
+        self.master_info = master_info
+
         logging.info(
-            f"init DistributedServer, rank: {g_parallel_info.world_rank},  size: {g_parallel_info.world_size}"
+            f"init DistributedServer, rank: {parallel_info.world_rank},  size: {parallel_info.world_size}"
         )
         global _g_world_info
         if _g_world_info is not None:
-            _g_world_info.self = g_worker_info
+            _g_world_info.self = worker_info
             _g_world_info.num_nodes = (
-                g_parallel_info.world_size + g_parallel_info.local_world_size - 1
-            ) // g_parallel_info.local_world_size
+                parallel_info.world_size + parallel_info.local_world_size - 1
+            ) // parallel_info.local_world_size
 
-        if g_parallel_info.world_size == 1:
+        if parallel_info.world_size == 1:
             logging.info("world_size == 1, do not start distributed_server")
             update_master_info(
-                g_worker_info.ip, py_env_configs.server_config.start_port
+                master_info,
+                parallel_info,
+                worker_info.ip,
+                py_env_configs.server_config.start_port,
             )
             return
 
         if rank == -1:
-            rank = g_parallel_info.world_rank
+            rank = parallel_info.world_rank
         if world_size == -1:
-            world_size = g_parallel_info.world_size
+            world_size = parallel_info.world_size
         self._initialized = True
         self.py_env_configs = py_env_configs
         self.rank = rank
         self.world_size = world_size
 
         self.master_ip, master_server_port = get_master(
-            self.py_env_configs.distribute_config
+            self.py_env_configs.distribute_config, parallel_info, worker_info
         )
         if master_server_port == "":
             self.master_server_port = WorkerInfo.server_port_offset(
@@ -188,11 +205,14 @@ class DistributedServer(object):
         else:
             self.master_server_port = int(master_server_port)
 
-        update_master_info(self.master_ip, self.master_server_port)
-        _g_world_info.master = g_master_info
+        update_master_info(
+            master_info, parallel_info, self.master_ip, self.master_server_port
+        )
+        _g_world_info.master = master_info
+        # master will be set later in bootstrap() when members are registered
 
         logging.info(
-            f"{g_parallel_info} init tcpstore "
+            f"{parallel_info} init tcpstore "
             f"{self.master_ip}:{self.master_server_port - 1}"
         )
 
@@ -200,14 +220,14 @@ class DistributedServer(object):
         if init_process_timeout is not None:
             init_process_timeout = timedelta(seconds=init_process_timeout)
         store = TCPStore(
-            host_name=g_master_info.ip,
+            host_name=master_info.ip,
             port=self.master_server_port - 1,
             world_size=world_size,
             is_master=(rank == 0),
             wait_for_workers=wait_for_workers,
             timeout=init_process_timeout,
         )
-        logging.info(f"{g_parallel_info} init tcpstore done")
+        logging.info(f"{parallel_info} init tcpstore done")
         self.store = store
 
     def safe_store_set(self, key: str, value: str) -> None:
@@ -243,7 +263,9 @@ class DistributedServer(object):
 
     def regist(self) -> None:
         key = _registry_rank_address_key + str(self.rank)
-        self.safe_store_set(key, f"{g_worker_info.ip}:{g_worker_info.server_port}")
+        self.safe_store_set(
+            key, f"{self.worker_info.ip}:{self.worker_info.server_port}"
+        )
 
     def bootstrap(self) -> None:
         timeout_minutes = self.py_env_configs.distribute_config.gang_timeout_min
@@ -277,7 +299,7 @@ class DistributedServer(object):
                         raise Exception(
                             f"rank {rank} error address: {members_address[i]}"
                         )
-                    local_rank = rank % g_parallel_info.local_world_size
+                    local_rank = rank % self.parallel_info.local_world_size
                     new_member = WorkerInfo(
                         ip=ip,
                         server_port=WorkerInfo.server_port_offset(
@@ -319,7 +341,7 @@ class DistributedServer(object):
                     _g_world_info.members.append(new_member)
                     if rank == 0:
                         _g_world_info.master = new_member
-                _g_world_info.bootstrap = True
+                _g_world_info.initialized = True
                 return
 
             cur_time = datetime.datetime.now()
@@ -333,20 +355,25 @@ class DistributedServer(object):
             retry_time += 1
             time.sleep(sleep_time)
 
-    def start(self, py_env_configs: PyEnvConfigs) -> None:
+    def start(
+        self,
+        py_env_configs: PyEnvConfigs,
+        parallel_info: ParallelInfo,
+        worker_info: WorkerInfo,
+    ) -> None:
         logging.info(
-            f"DistributedServer start, rank: {g_parallel_info.world_rank},  size: {g_parallel_info.world_size}"
+            f"DistributedServer start, rank: {parallel_info.world_rank},  size: {parallel_info.world_size}"
         )
-        if g_parallel_info.world_size == 1:
+        if parallel_info.world_size == 1:
             return
         self.bootstrap()
 
-        master_url = f"tcp://{g_master_info.ip}:{self.master_server_port - 1}"
+        master_url = f"tcp://{self.master_info.ip}:{self.master_server_port - 1}"
         logging.info(
-            f"DistributedServer bootstrap done, rank: {g_parallel_info.world_rank},  size: {g_parallel_info.world_size}, master {master_url}"
+            f"DistributedServer bootstrap done, rank: {parallel_info.world_rank},  size: {parallel_info.world_size}, master {master_url}"
         )
         logging.info(
-            f"DistributedServer started, rank: {g_parallel_info.world_rank},  size: {g_parallel_info.world_size}, master {master_url}"
+            f"DistributedServer started, rank: {parallel_info.world_rank},  size: {parallel_info.world_size}, master {master_url}"
         )
 
 
@@ -380,9 +407,11 @@ def split_ip_port(addr: str):
     return ip, port
 
 
-def get_master(distribute_config) -> (str, str):
+def get_master(
+    distribute_config, parallel_info: ParallelInfo, worker_info: WorkerInfo
+) -> (str, str):
     port = ""
-    if g_parallel_info.local_world_size < g_parallel_info.world_size:
+    if parallel_info.local_world_size < parallel_info.world_size:
         # from config file
         if distribute_config.distribute_config_file:
             address, port = get_master_from_file(distribute_config)
@@ -406,7 +435,7 @@ def get_master(distribute_config) -> (str, str):
             address, port = get_master_from_c2(distribute_config)
     else:
         # 单机/特殊分布式场景，这里原先逻辑没有 else 分支，保持空值或自行约定
-        address = g_worker_info.ip
+        address = worker_info.ip
         logging.info(f"no other workers, leader is self: {address}")
 
     return get_ip(address), port

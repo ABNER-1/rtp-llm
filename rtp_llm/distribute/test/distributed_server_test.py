@@ -24,13 +24,7 @@ import rtp_llm.distribute.distributed_server as ds
 from rtp_llm.config.server_config_setup import setup_and_configure_server
 from rtp_llm.distribute.distributed_server import get_world_info
 from rtp_llm.distribute.test.fake_model import FakeModel
-from rtp_llm.distribute.worker_info import (
-    WorkerInfo,
-    g_master_info,
-    g_parallel_info,
-    g_worker_info,
-    update_worker_info,
-)
+from rtp_llm.distribute.worker_info import MasterInfo, ParallelInfo, WorkerInfo
 from rtp_llm.frontend.frontend_server import FrontendWorker
 from rtp_llm.model_factory_register import register_model
 from rtp_llm.openai.openai_endpoint import OpenaiEndpoint
@@ -48,6 +42,19 @@ def fake_init(self, *args, **kwargs):
 
 FrontendWorker.__init__ = fake_init
 OpenaiEndpoint.__init__ = fake_init
+
+
+g_parallel_info = ParallelInfo.from_env(MIN_WORKER_INFO_PORT_NUM)
+g_worker_info = WorkerInfo.from_env(g_parallel_info, 0, 0)
+g_master_info = MasterInfo(
+    ip="",
+    th_nccl_port=0,
+    tp_nccl_port=0,
+    nccl_op_port=0,
+    sp_gpt_nccl_port=0,
+    dp_tp_nccl_port=0,
+    ffn_tp_nccl_port=0,
+)
 
 
 class FakeStore:
@@ -124,10 +131,13 @@ class TestGetWorldInfo(TestCase):
     )
     def test_single_node(self):
         py_env_configs: PyEnvConfigs = setup_args()
-        setup_and_configure_server(py_env_configs)
+        setup_and_configure_server(py_env_configs, g_parallel_info, g_worker_info)
 
         world_info = get_world_info(
-            py_env_configs.server_config, py_env_configs.distribute_config
+            py_env_configs.server_config,
+            py_env_configs.distribute_config,
+            g_parallel_info,
+            g_worker_info,
         )
         self.assertTrue(world_info.initialized)
         self.assertEqual(len(world_info.members), 2)
@@ -184,12 +194,7 @@ class DistributedServerTest(unittest.TestCase):
         )
         def test_get_master_use_distribute_config_file(self):
             py_env_configs: PyEnvConfigs = setup_args()
-            setup_and_configure_server(py_env_configs)
-            # update_worker_info(
-            #    py_env_configs.server_config.start_port,
-            #    py_env_configs.server_config.worker_info_port_num,
-            #    py_env_configs.distribute_config.remote_server_port,
-            # )
+            setup_and_configure_server(py_env_configs, g_parallel_info, g_worker_info)
 
             ip, port = ds.get_master()
             assert ip == "11.161.48.116"
@@ -210,7 +215,7 @@ class DistributedServerTest(unittest.TestCase):
         )
         def test_get_master_use_gang_config_string(self):
             py_env_configs: PyEnvConfigs = setup_args()
-            setup_and_configure_server(py_env_configs)
+            setup_and_configure_server(py_env_configs, g_parallel_info, g_worker_info)
             ip, port = ds.get_master()
             assert ip == "10.0.0.123"
             assert port == ""
@@ -230,7 +235,7 @@ class DistributedServerTest(unittest.TestCase):
         )
         def test_get_master_use_leader_address(self):
             py_env_configs: PyEnvConfigs = setup_args()
-            setup_and_configure_server(py_env_configs)
+            setup_and_configure_server(py_env_configs, g_parallel_info, g_worker_info)
 
             ip, port = ds.get_master()
             assert ip == "10.0.0.5"
@@ -251,7 +256,7 @@ class DistributedServerTest(unittest.TestCase):
         )
         def test_get_master_use_c2_file(self):
             py_env_configs: PyEnvConfigs = setup_args()
-            setup_and_configure_server(py_env_configs)
+            setup_and_configure_server(py_env_configs, g_parallel_info, g_worker_info)
             ip, port = ds.get_master()
             # 具体 IP 取决于 annocation 文件的内容，这里只检查非空
             assert isinstance(ip, str)
@@ -270,7 +275,7 @@ class DistributedServerTest(unittest.TestCase):
         )
         def test_get_master_single_machine(self):
             py_env_configs: PyEnvConfigs = setup_args()
-            setup_and_configure_server(py_env_configs)
+            setup_and_configure_server(py_env_configs, g_parallel_info, g_worker_info)
 
             ip, port = ds.get_master()
             assert ip == g_worker_info.ip
@@ -286,7 +291,7 @@ class DistributedServerTest(unittest.TestCase):
         )
         def test_get_master_from_file(self):
             py_env_configs: PyEnvConfigs = setup_args()
-            setup_and_configure_server(py_env_configs)
+            setup_and_configure_server(py_env_configs, g_parallel_info, g_worker_info)
             ip, port = ds.get_master_from_file()
             assert ip == "11.161.48.116"
             assert port == "10000"
@@ -301,7 +306,7 @@ class DistributedServerTest(unittest.TestCase):
         )
         def test_get_master_from_c2(self):
             py_env_configs: PyEnvConfigs = setup_args()
-            setup_and_configure_server(py_env_configs)
+            setup_and_configure_server(py_env_configs, g_parallel_info, g_worker_info)
             ip, port = ds.get_master_from_c2()
             assert ip == "33.115.125.211"
             assert port == ""
@@ -322,7 +327,7 @@ class DistributedServerTest(unittest.TestCase):
         )
         def test_distributed_server_safe_store_set_get(self):
             py_env_configs: PyEnvConfigs = setup_args()
-            setup_and_configure_server(py_env_configs)
+            setup_and_configure_server(py_env_configs, g_parallel_info, g_worker_info)
             stop_event = threading.Event()
 
             t = threading.Thread(
@@ -375,7 +380,7 @@ class DistributedServerTest(unittest.TestCase):
         )
         def test_distributed_server_regist_and_bootstrap(self):
             py_env_configs: PyEnvConfigs = setup_args()
-            setup_and_configure_server(py_env_configs)
+            setup_and_configure_server(py_env_configs, g_parallel_info, g_worker_info)
             stop_event = threading.Event()
 
             # rank1
@@ -387,7 +392,7 @@ class DistributedServerTest(unittest.TestCase):
 
             # rank0
             py_env_configs: PyEnvConfigs = setup_args()
-            setup_and_configure_server(py_env_configs)
+            setup_and_configure_server(py_env_configs, g_parallel_info, g_worker_info)
             stop_event = threading.Event()
             server0 = ds.DistributedServer(
                 py_env_configs=py_env_configs, rank=0, world_size=2

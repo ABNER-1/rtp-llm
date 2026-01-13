@@ -141,6 +141,9 @@ def try_upload_log(log_dir_path: str, upload_path: str):
 
 
 if __name__ == "__main__":
+    from rtp_llm.config.py_config_modules import MIN_WORKER_INFO_PORT_NUM
+    from rtp_llm.distribute.worker_info import ParallelInfo, WorkerInfo
+
     batch_size_list = json.loads(os.environ.get("BATCH_SIZE_LIST", "[1,4,8]"))
     input_len_list = json.loads(os.environ.get("INPUT_LEN_LIST", "[2048, 4096, 8192]"))
     is_decode = os.environ.get("IS_DECODE", "1") == "1"
@@ -152,7 +155,9 @@ if __name__ == "__main__":
     os.environ["MAX_SEQ_LEN"] = str(max_seq_len + 20)
 
     py_env_configs: PyEnvConfigs = setup_args()
-    setup_and_configure_server(py_env_configs)
+    parallel_info = ParallelInfo.from_env(MIN_WORKER_INFO_PORT_NUM)
+    worker_info = WorkerInfo.from_env(parallel_info, 0, 0)
+    setup_and_configure_server(py_env_configs, parallel_info, worker_info)
     port = py_env_configs.server_config.start_port
     world_rank = py_env_configs.parallelism_config.world_rank
     log_dir_name = (
