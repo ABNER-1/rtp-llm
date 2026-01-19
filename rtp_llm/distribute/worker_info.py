@@ -14,6 +14,59 @@ from rtp_llm.config.py_config_modules import (
     StaticConfig,
 )
 
+# Cache for CUDA availability to avoid repeated expensive checks
+_cuda_available_cache = None
+
+
+def _is_cuda_available() -> bool:
+    """
+    Cached version of torch.cuda.is_available() with environment variable control.
+
+    This function provides two optimizations:
+    1. Environment variable RTP_LLM_SKIP_CUDA_CHECK: If set to "1", always returns False
+       without calling torch.cuda.is_available(). This is useful for frontend processes
+       that don't need CUDA.
+    2. Caching: The result is cached to avoid repeated expensive calls in multi-process scenarios.
+
+    Returns:
+        bool: True if CUDA is available and not skipped, False otherwise.
+    """
+    global _cuda_available_cache
+
+    # Check if we should skip CUDA check (for frontend processes)
+    if os.environ.get("RTP_LLM_SKIP_CUDA_CHECK") == "1":
+        return False
+
+    # Return cached result if available
+    if _cuda_available_cache is not None:
+        return _cuda_available_cache
+
+    # Check if parent process has set the cached result via environment variable
+    env_cuda_available = os.environ.get("RTP_LLM_CUDA_AVAILABLE")
+    if env_cuda_available is not None:
+        _cuda_available_cache = env_cuda_available == "1"
+        return _cuda_available_cache
+
+    # First time check - this is expensive but only happens once per process tree
+    _cuda_available_cache = torch.cuda.is_available()
+
+    # Set environment variable for child processes to avoid repeated checks
+    os.environ["RTP_LLM_CUDA_AVAILABLE"] = "1" if _cuda_available_cache else "0"
+
+    return _cuda_available_cache
+
+
+def _get_cuda_device_count() -> int:
+    """
+    Get CUDA device count with caching and skip check support.
+
+    Returns:
+        int: Number of CUDA devices, or 0 if CUDA is not available or skipped.
+    """
+    if not _is_cuda_available():
+        return 0
+    return torch.cuda.device_count()
+
 
 def get_worker_port_num():
     global WORKER_INFO_PORT_NUM
@@ -69,7 +122,7 @@ class ParallelInfo(object):
         assert (
             self.world_size == self.tp_size * self.dp_size * self.pp_size
         ), f"world_size:{self.world_size} != tp_size:{self.tp_size} * dp_size:{self.dp_size} * pp_size:{self.pp_size}"
-        if torch.cuda.is_available():
+        if _is_cuda_available():
             self.device = "cuda:" + str(self.world_rank % self.local_world_size)
         else:
             self.device = "cpu"
@@ -109,7 +162,7 @@ class ParallelInfo(object):
         if "LOCAL_WORLD_SIZE" in params:
             local_world_size = int(params["LOCAL_WORLD_SIZE"])
         else:
-            local_world_size = min(torch.cuda.device_count(), world_size)
+            local_world_size = min(_get_cuda_device_count(), world_size)
             local_world_size = max(
                 local_world_size, 1
             )  # make sure local_world_size >= 1
@@ -127,11 +180,9 @@ class ParallelInfo(object):
             world_index = int(params["WORLD_INDEX"])
             world_rank = world_index * info.local_world_size
             info.world_rank = world_rank
-        if torch.cuda.is_available() and (
-            info.local_world_size > torch.cuda.device_count()
-        ):
+        if _is_cuda_available() and (info.local_world_size > _get_cuda_device_count()):
             raise Exception(
-                f"local_world_size:{info.local_world_size} > cuda device count:{torch.cuda.device_count()}"
+                f"local_world_size:{info.local_world_size} > cuda device count:{_get_cuda_device_count()}"
             )
         if (
             info.tp_size * info.pp_size * info.dp_size != info.world_size
@@ -147,7 +198,7 @@ class ParallelInfo(object):
                 f"not support info.world_size:[{info.world_size}] mod info.local_world_size:[{info.local_world_size}] != 0"
             )
 
-        if torch.cuda.is_available():
+        if _is_cuda_available():
             torch.cuda.set_device(info.local_rank)
 
         if os.environ.get("ACCL_SELECT_PATH") == "1":

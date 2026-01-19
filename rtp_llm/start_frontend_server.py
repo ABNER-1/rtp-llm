@@ -5,6 +5,10 @@ import sys
 import time
 import traceback
 
+# Set environment variable to skip CUDA checks in frontend process
+# This must be set before importing any modules that might trigger torch.cuda.is_available()
+os.environ["RTP_LLM_SKIP_CUDA_CHECK"] = "1"
+
 from setproctitle import setproctitle
 
 from rtp_llm.config.py_config_modules import PyEnvConfigs
