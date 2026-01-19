@@ -90,12 +90,6 @@ class MultiModalEmbeddingInterface:
         self, url: str, mm_type: MMUrlType, download_headers: str = "", **kwargs: Any
     ):
         dtype = self._data_type
-        from rtp_llm.config.py_config_modules import MIN_WORKER_INFO_PORT_NUM
-        from rtp_llm.distribute.worker_info import ParallelInfo
-
-        parallel_info = ParallelInfo.from_env(MIN_WORKER_INFO_PORT_NUM)
-        if parallel_info.tp_rank > 0:
-            return torch.Tensor([])
 
         cached_res = vit_emb_cache_.check_cache(url)
         if cached_res is not None:

@@ -16,12 +16,7 @@ from rtp_llm.config.py_config_modules import (
     PyEnvConfigs,
     ServerConfig,
 )
-from rtp_llm.distribute.worker_info import (
-    MasterInfo,
-    ParallelInfo,
-    WorkerInfo,
-    update_master_info,
-)
+from rtp_llm.distribute.worker_info import MasterInfo, ParallelInfo, WorkerInfo
 
 
 @dataclass
@@ -178,12 +173,12 @@ class DistributedServer(object):
 
         if parallel_info.world_size == 1:
             logging.info("world_size == 1, do not start distributed_server")
-            update_master_info(
-                master_info,
-                parallel_info,
-                worker_info.ip,
-                py_env_configs.server_config.start_port,
-            )
+            master_info.ip = worker_info.ip
+            master_info.base_port = py_env_configs.server_config.start_port
+            master_info.dp_rank = parallel_info.dp_rank
+            master_info.ffn_sp_size = parallel_info.ffn_sp_size
+            master_info.tp_size = parallel_info.tp_size
+            logging.info(f"master_info: {master_info}")
             return
 
         if rank == -1:
@@ -205,9 +200,12 @@ class DistributedServer(object):
         else:
             self.master_server_port = int(master_server_port)
 
-        update_master_info(
-            master_info, parallel_info, self.master_ip, self.master_server_port
-        )
+        master_info.ip = self.master_ip
+        master_info.base_port = self.master_server_port
+        master_info.dp_rank = parallel_info.dp_rank
+        master_info.ffn_sp_size = parallel_info.ffn_sp_size
+        master_info.tp_size = parallel_info.tp_size
+        logging.info(f"master_info: {master_info}")
         _g_world_info.master = master_info
         # master will be set later in bootstrap() when members are registered
 

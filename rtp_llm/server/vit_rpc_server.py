@@ -142,11 +142,9 @@ if __name__ == "__main__":
     worker_info = WorkerInfo.from_env(parallel_info, 0, 0)
     master_info = MasterInfo(
         ip="",
-        th_nccl_port=0,
-        tp_nccl_port=0,
-        nccl_op_port=0,
-        sp_gpt_nccl_port=0,
-        dp_tp_nccl_port=0,
-        ffn_tp_nccl_port=0,
+        base_port=0,
+        dp_rank=parallel_info.dp_rank,
+        ffn_sp_size=parallel_info.ffn_sp_size,
+        tp_size=parallel_info.tp_size,
     )
     vit_start_server(parallel_info, worker_info, master_info)

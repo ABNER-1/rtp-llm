@@ -175,9 +175,9 @@ class EngineConfig:
     @staticmethod
     def create(
         py_env_configs: PyEnvConfigs,
-        parallel_info: ParallelInfo,
-        worker_info: WorkerInfo,
-        master_info: MasterInfo,
+        parallel_info: Optional[ParallelInfo] = None,
+        worker_info: Optional[WorkerInfo] = None,
+        master_info: Optional[MasterInfo] = None,
     ) -> "EngineConfig":
         """Create and fully initialize EngineConfig from py_env_configs.
 
@@ -190,10 +190,29 @@ class EngineConfig:
 
         Args:
             py_env_configs: PyEnvConfigs instance containing all configuration
+            parallel_info: Optional ParallelInfo. If None, creates default for standalone scenario.
+            worker_info: Optional WorkerInfo. If None, creates default for standalone scenario.
+            master_info: Optional MasterInfo. If None, creates default for standalone scenario.
 
         Returns:
             Initialized EngineConfig instance
         """
+        # For standalone scenarios, create minimal default configuration
+        if parallel_info is None or worker_info is None or master_info is None:
+            from rtp_llm.config.py_config_modules import MIN_WORKER_INFO_PORT_NUM
+
+            if parallel_info is None:
+                parallel_info = ParallelInfo.from_env(MIN_WORKER_INFO_PORT_NUM)
+            if worker_info is None:
+                worker_info = WorkerInfo.from_env(parallel_info, 0, 0)
+            if master_info is None:
+                master_info = MasterInfo(
+                    ip="",
+                    base_port=0,
+                    dp_rank=parallel_info.dp_rank,
+                    ffn_sp_size=parallel_info.ffn_sp_size,
+                    tp_size=parallel_info.tp_size,
+                )
 
         # Create ParallelismConfig and setup from parallel_info
         parallelism_config = ParallelismConfig()
@@ -276,8 +295,8 @@ class EngineConfig:
 def setup_parallelism_config(
     parallelism_config: ParallelismConfig,
     parallel_info: ParallelInfo,
-    worker_info: WorkerInfo,
-    master_info: MasterInfo,
+    worker_info: Optional[WorkerInfo] = None,
+    master_info: Optional[MasterInfo] = None,
     py_ffn_disaggregate_config: Optional[FfnDisAggregateConfig] = None,
 ) -> None:
     """Setup ParallelismConfig from parallel_info and master/worker info.
@@ -287,8 +306,22 @@ def setup_parallelism_config(
     Args:
         parallelism_config: ParallelismConfig instance to setup
         parallel_info: ParallelInfo for parallelism setup
+        worker_info: Optional WorkerInfo. If None, creates minimal default for standalone scenarios.
+        master_info: Optional MasterInfo. If None, creates minimal default for standalone scenarios.
         py_ffn_disaggregate_config: Optional FfnDisAggregateConfig from py_env_configs
     """
+    # Create minimal default worker_info and master_info if not provided
+    # This is for standalone scenarios (like weight conversion) where network ports are not needed
+    if worker_info is None:
+        worker_info = WorkerInfo.from_env(parallel_info, 0, 0)
+    if master_info is None:
+        master_info = MasterInfo(
+            ip="",
+            base_port=0,
+            dp_rank=parallel_info.dp_rank,
+            ffn_sp_size=parallel_info.ffn_sp_size,
+            tp_size=parallel_info.tp_size,
+        )
     parallelism_config.tp_size = parallel_info.tp_size
     parallelism_config.tp_rank = parallel_info.tp_rank
     parallelism_config.ep_size = parallel_info.ep_size

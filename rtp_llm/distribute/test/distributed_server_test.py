@@ -48,12 +48,10 @@ g_parallel_info = ParallelInfo.from_env(MIN_WORKER_INFO_PORT_NUM)
 g_worker_info = WorkerInfo.from_env(g_parallel_info, 0, 0)
 g_master_info = MasterInfo(
     ip="",
-    th_nccl_port=0,
-    tp_nccl_port=0,
-    nccl_op_port=0,
-    sp_gpt_nccl_port=0,
-    dp_tp_nccl_port=0,
-    ffn_tp_nccl_port=0,
+    base_port=0,
+    dp_rank=g_parallel_info.dp_rank,
+    ffn_sp_size=g_parallel_info.ffn_sp_size,
+    tp_size=g_parallel_info.tp_size,
 )
 
 

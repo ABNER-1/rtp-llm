@@ -20,7 +20,7 @@ from rtp_llm.config.py_config_modules import (
     QuantizationConfig,
     VitConfig,
 )
-from rtp_llm.distribute.worker_info import MasterInfo, ParallelInfo, WorkerInfo
+from rtp_llm.distribute.worker_info import ParallelInfo
 from rtp_llm.model_factory import ModelFactory
 from rtp_llm.model_loader.load_config import LoadMethod
 from rtp_llm.ops import (
@@ -219,23 +219,11 @@ class WeightConverter:
             env_params.get("HACK_LAYER_NUM", str(model_config.num_layers))
         )
         # Create and setup parallelism_config
+
         paralle_info = ParallelInfo.from_params(env_params, MIN_WORKER_INFO_PORT_NUM)
         logging.info(f"begin convert model rank:{paralle_info}")
-        print("here", paralle_info)
-        worker_info = WorkerInfo.from_env(paralle_info, 0, 0)
-        master_info = MasterInfo(
-            ip="",
-            th_nccl_port=0,
-            tp_nccl_port=0,
-            nccl_op_port=0,
-            sp_gpt_nccl_port=0,
-            dp_tp_nccl_port=0,
-            ffn_tp_nccl_port=0,
-        )
         parallelism_config = ParallelismConfig()
-        setup_parallelism_config(
-            parallelism_config, paralle_info, worker_info, master_info
-        )
+        setup_parallelism_config(parallelism_config, paralle_info)
 
         # Create other required configs
         hw_kernel_config = HWKernelConfig()

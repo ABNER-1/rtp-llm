@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import socket
-from dataclasses import dataclass
 from typing import Any, Dict
 
 import torch
@@ -431,32 +430,113 @@ class WorkerInfo(object):
         """
 
 
-@dataclass
 class MasterInfo:
-    ip: str
-    th_nccl_port: int
-    tp_nccl_port: int
-    nccl_op_port: int
-    sp_gpt_nccl_port: int
-    dp_tp_nccl_port: int
-    ffn_tp_nccl_port: int
+    """Master 节点的 NCCL 通信端口信息
 
+    所有端口都是根据 base_port 和并行配置字段动态计算的 property。
+    设置 base_port、dp_rank、ffn_sp_size、tp_size 后，所有端口会自动计算。
+    """
 
-def update_master_info(
-    master_info: MasterInfo, parallel_info: ParallelInfo, ip: str, base_port: int
-):
-    master_info.ip = ip
-    master_info.dp_tp_nccl_port = base_port - 10
-    master_info.th_nccl_port = base_port - 11
-    base_port -= parallel_info.dp_rank * MASTER_INFO_PORT_NUM
-    master_info.tp_nccl_port = base_port - 2
-    master_info.nccl_op_port = base_port - 3
-    master_info.sp_gpt_nccl_port = base_port - 4
-    # note: reserve 4 ports for ffn_tp_nccl_port
-    master_info.ffn_tp_nccl_port = base_port - 5
-    if parallel_info.ffn_sp_size != parallel_info.tp_size:
-        base_port -= parallel_info.ffn_sp_size
-    logging.info(f"master_info: {master_info}")
+    def __init__(
+        self,
+        ip: str = "",
+        base_port: int = 0,
+        dp_rank: int = 0,
+        ffn_sp_size: int = 1,
+        tp_size: int = 1,
+    ):
+        self._ip = ip
+        self._base_port = base_port
+        self._dp_rank = dp_rank
+        self._ffn_sp_size = ffn_sp_size
+        self._tp_size = tp_size
+
+    @property
+    def ip(self) -> str:
+        return self._ip
+
+    @ip.setter
+    def ip(self, value: str):
+        self._ip = value
+
+    @property
+    def base_port(self) -> int:
+        return self._base_port
+
+    @base_port.setter
+    def base_port(self, value: int):
+        self._base_port = value
+
+    @property
+    def dp_rank(self) -> int:
+        return self._dp_rank
+
+    @dp_rank.setter
+    def dp_rank(self, value: int):
+        self._dp_rank = value
+
+    @property
+    def ffn_sp_size(self) -> int:
+        return self._ffn_sp_size
+
+    @ffn_sp_size.setter
+    def ffn_sp_size(self, value: int):
+        self._ffn_sp_size = value
+
+    @property
+    def tp_size(self) -> int:
+        return self._tp_size
+
+    @tp_size.setter
+    def tp_size(self, value: int):
+        self._tp_size = value
+
+    @property
+    def dp_tp_nccl_port(self) -> int:
+        """使用原始 base_port 计算"""
+        return self._base_port - 10
+
+    @property
+    def th_nccl_port(self) -> int:
+        """使用原始 base_port 计算"""
+        return self._base_port - 11
+
+    @property
+    def tp_nccl_port(self) -> int:
+        """使用调整后的 base_port 计算（减去 dp_rank * MASTER_INFO_PORT_NUM）"""
+        adjusted_base_port = self._base_port - self._dp_rank * MASTER_INFO_PORT_NUM
+        return adjusted_base_port - 2
+
+    @property
+    def nccl_op_port(self) -> int:
+        """使用调整后的 base_port 计算（减去 dp_rank * MASTER_INFO_PORT_NUM）"""
+        adjusted_base_port = self._base_port - self._dp_rank * MASTER_INFO_PORT_NUM
+        return adjusted_base_port - 3
+
+    @property
+    def sp_gpt_nccl_port(self) -> int:
+        """使用调整后的 base_port 计算（减去 dp_rank * MASTER_INFO_PORT_NUM）"""
+        adjusted_base_port = self._base_port - self._dp_rank * MASTER_INFO_PORT_NUM
+        return adjusted_base_port - 4
+
+    @property
+    def ffn_tp_nccl_port(self) -> int:
+        """使用调整后的 base_port 计算（减去 dp_rank * MASTER_INFO_PORT_NUM）
+        如果 ffn_sp_size != tp_size，还需要额外调整
+        """
+        adjusted_base_port = self._base_port - self._dp_rank * MASTER_INFO_PORT_NUM
+        # note: reserve 4 ports for ffn_tp_nccl_port
+        if self._ffn_sp_size != self._tp_size:
+            adjusted_base_port -= self._ffn_sp_size
+        return adjusted_base_port - 5
+
+    def __str__(self):
+        return (
+            f"MasterInfo:[ ip={self._ip} base_port={self._base_port} "
+            f"th_nccl_port={self.th_nccl_port} tp_nccl_port={self.tp_nccl_port} "
+            f"nccl_op_port={self.nccl_op_port} sp_gpt_nccl_port={self.sp_gpt_nccl_port} "
+            f"dp_tp_nccl_port={self.dp_tp_nccl_port} ffn_tp_nccl_port={self.ffn_tp_nccl_port} ]"
+        )
 
 
 def total_need_port_num(parallel_info: ParallelInfo) -> int:
