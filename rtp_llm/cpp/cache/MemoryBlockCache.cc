@@ -439,7 +439,7 @@ bool MemoryBlockCache::syncRpcCallForAllRank(const std::vector<int>& gpu_block_i
                 continue;
             }
             if (!ok) {
-                RTP_LLM_FAIL(
+                RTP_LLM_LOG_WARNING(
                     "request failed, grpc completion queue failed, status: %d, request: %ld", next_status, request_id);
             }
             ++finished_count;
@@ -449,12 +449,12 @@ bool MemoryBlockCache::syncRpcCallForAllRank(const std::vector<int>& gpu_block_i
             success_ranks[rank] = 1;
 
             if (status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED) {
-                RTP_LLM_FAIL("request failed, rank %d failed, error: %d(%s), addr: %s, request: %ld",
-                             rank,
-                             status.error_code(),
-                             status.error_message().c_str(),
-                             rpc_context.server_addr.c_str(),
-                             request_id);
+                RTP_LLM_LOG_WARNING("request failed, rank %d failed, error: %d(%s), addr: %s, request: %ld",
+                                    rank,
+                                    status.error_code(),
+                                    status.error_message().c_str(),
+                                    rpc_context.server_addr.c_str(),
+                                    request_id);
             }
 
             // 某个rank请求返回失败，可以继续等待其他rank返回.
