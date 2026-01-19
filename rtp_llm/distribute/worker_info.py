@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import socket
-from dataclasses import dataclass
 from typing import Any, Dict
 
 import torch
@@ -10,24 +9,7 @@ import torch
 from rtp_llm.config.py_config_modules import (
     MASTER_INFO_PORT_NUM,
     MIN_WORKER_INFO_PORT_NUM,
-    WORKER_INFO_PORT_NUM,
-    StaticConfig,
 )
-
-
-def get_worker_port_num():
-    global WORKER_INFO_PORT_NUM
-    global MIN_WORKER_INFO_PORT_NUM
-    WORKER_INFO_PORT_NUM = int(StaticConfig.worker_config.worker_info_port_num)
-    logging.info(f"env WORKER_INFO_PORT_NUM: {WORKER_INFO_PORT_NUM}")
-    if WORKER_INFO_PORT_NUM < MIN_WORKER_INFO_PORT_NUM:
-        raise Exception(
-            f"env worker info port num {WORKER_INFO_PORT_NUM} "
-            f"is small than min worker info port num {MIN_WORKER_INFO_PORT_NUM}"
-        )
-
-
-get_worker_port_num()
 
 
 class FrontendServerInfo(object):
@@ -50,6 +32,7 @@ class ParallelInfo(object):
         world_size: int,
         world_rank: int,
         local_world_size: int,
+        worker_info_port_num: int,
     ):
         self.tp_size = tp_size
         self.ep_size = ep_size
@@ -60,6 +43,14 @@ class ParallelInfo(object):
         self.world_size = world_size
         self.world_rank = world_rank
         self.local_world_size = local_world_size
+        self.worker_info_port_num = int(worker_info_port_num)
+        logging.info(f"ParallelInfo worker_info_port_num: {self.worker_info_port_num}")
+
+        if self.worker_info_port_num < MIN_WORKER_INFO_PORT_NUM:
+            raise Exception(
+                f"worker info port num {self.worker_info_port_num} "
+                f"is smaller than min worker info port num {MIN_WORKER_INFO_PORT_NUM}"
+            )
         logging.info(
             f"ParallelInfo:[ tp_size={self.tp_size} ep_size={self.ep_size} pp_size={self.pp_size} world_size={self.world_size} world_rank={self.world_rank} local_world_size={self.local_world_size} ffn_sp_size={self.ffn_sp_size} ffn_tp_size={self.ffn_tp_size}]"
         )
@@ -69,10 +60,6 @@ class ParallelInfo(object):
         assert (
             self.world_size == self.tp_size * self.dp_size * self.pp_size
         ), f"world_size:{self.world_size} != tp_size:{self.tp_size} * dp_size:{self.dp_size} * pp_size:{self.pp_size}"
-        if torch.cuda.is_available():
-            self.device = "cuda:" + str(self.world_rank % self.local_world_size)
-        else:
-            self.device = "cpu"
 
     @property
     def tp_rank(self) -> int:
@@ -100,19 +87,20 @@ class ParallelInfo(object):
         return self.world_rank == 0
 
     @staticmethod
-    def from_env() -> "ParallelInfo":
-        return ParallelInfo.from_params(dict(os.environ))
+    def from_env(worker_info_port_num: int) -> "ParallelInfo":
+        return ParallelInfo.from_params(dict(os.environ), worker_info_port_num)
 
     @staticmethod
-    def from_params(params: Dict[str, str]) -> "ParallelInfo":
+    def from_params(
+        params: Dict[str, str], worker_info_port_num: int
+    ) -> "ParallelInfo":
         world_size = int(params.get("WORLD_SIZE", "1"))
         if "LOCAL_WORLD_SIZE" in params:
             local_world_size = int(params["LOCAL_WORLD_SIZE"])
         else:
             local_world_size = min(torch.cuda.device_count(), world_size)
-            local_world_size = max(
-                local_world_size, 1
-            )  # make sure local_world_size >= 1
+        local_world_size = max(local_world_size, 1)  # make sure local_world_size >= 1
+
         info = ParallelInfo(
             tp_size=int(params.get("TP_SIZE", "1")),
             ep_size=int(params.get("EP_SIZE", params.get("WORLD_SIZE", "1"))),
@@ -122,6 +110,7 @@ class ParallelInfo(object):
             world_size=world_size,
             world_rank=int(params.get("WORLD_RANK", "0")),
             local_world_size=local_world_size,
+            worker_info_port_num=worker_info_port_num,
         )
         if ("WORLD_INDEX" in params) and ("WORLD_RANK" not in params):
             world_index = int(params["WORLD_INDEX"])
@@ -179,22 +168,36 @@ class ParallelInfo(object):
                     f"try decode ACCL_NIC_GPU_AFFINITY failed, content is {content}"
                 )
 
+        logging.info(f"ParallelInfo from_params: {info}")
         return info
 
-    # used for ut
-    def reload(self):
-        new_info = self.from_env()
+    def reload(self, worker_info_port_num: int):
+        new_info = self.from_env(worker_info_port_num)
         self.tp_size = new_info.tp_size
         self.pp_size = new_info.pp_size
         self.world_size = new_info.world_size
         self.world_rank = new_info.world_rank
         self.local_world_size = new_info.local_world_size
+        self.worker_info_port_num = new_info.worker_info_port_num
+        logging.info(f"ParallelInfo reload: {self}")
+
+    def __eq__(self, other):
+        if not isinstance(other, ParallelInfo):
+            return False
+        return (
+            self.tp_size == other.tp_size
+            and self.ep_size == other.ep_size
+            and self.pp_size == other.pp_size
+            and self.dp_size == other.dp_size
+            and self.ffn_sp_size == other.ffn_sp_size
+            and self.world_size == other.world_size
+            and self.world_rank == other.world_rank
+            and self.local_world_size == other.local_world_size
+            and self.worker_info_port_num == other.worker_info_port_num
+        )
 
     def __str__(self):
-        return f"ParallelInfo:[ tp_size={self.tp_size} pp_size={self.pp_size} world_size={self.world_size} world_rank={self.world_rank} local_world_size={self.local_world_size} tp_rank={self.tp_rank} dp_rank={self.dp_rank} ep_size={self.ep_size} dp_size={self.dp_size} ep_rank={self.ep_rank} local_rank={self.local_rank} ffn_sp_size={self.ffn_sp_size} ]"
-
-
-g_parallel_info = ParallelInfo.from_env()
+        return f"ParallelInfo:[ tp_size={self.tp_size} pp_size={self.pp_size} world_size={self.world_size} world_rank={self.world_rank} local_world_size={self.local_world_size} tp_rank={self.tp_rank} dp_rank={self.dp_rank} ep_size={self.ep_size} dp_size={self.dp_size} ep_rank={self.ep_rank} local_rank={self.local_rank} ffn_sp_size={self.ffn_sp_size} worker_info_port_num={self.worker_info_port_num}]"
 
 
 class WorkerInfo(object):
@@ -205,6 +208,7 @@ class WorkerInfo(object):
         gang_hb_port: int,
         http_port: int,
         rpc_server_port: int,
+        embedding_rpc_server_port: int,
         remote_rpc_server_port: int,
         cache_store_listen_port: int,
         cache_store_connect_port: int,
@@ -221,6 +225,7 @@ class WorkerInfo(object):
         self.gang_hb_port = gang_hb_port
         self.http_port = http_port
         self.rpc_server_port = rpc_server_port
+        self.embedding_rpc_server_port = embedding_rpc_server_port
         self.remote_rpc_server_port = remote_rpc_server_port
         self.cache_store_listen_port = cache_store_listen_port
         self.cache_store_connect_port = cache_store_connect_port
@@ -235,82 +240,160 @@ class WorkerInfo(object):
     def equals(self, other: "WorkerInfo") -> bool:
         return self.ip == other.ip and self.server_port == other.server_port
 
+    def __eq__(self, other):
+        if not isinstance(other, WorkerInfo):
+            return False
+        return (
+            self.ip == other.ip
+            and self.server_port == other.server_port
+            and self.gang_hb_port == other.gang_hb_port
+            and self.http_port == other.http_port
+            and self.rpc_server_port == other.rpc_server_port
+            and self.embedding_rpc_server_port == other.embedding_rpc_server_port
+            and self.remote_rpc_server_port == other.remote_rpc_server_port
+            and self.cache_store_listen_port == other.cache_store_listen_port
+            and self.cache_store_connect_port == other.cache_store_connect_port
+            and self.cache_store_rdma_listen_port == other.cache_store_rdma_listen_port
+            and self.cache_store_rdma_connect_port
+            == other.cache_store_rdma_connect_port
+            and self.backend_server_port == other.backend_server_port
+            and self.local_rank == other.local_rank
+            and self.world_rank == other.world_rank
+            and self.name == other.name
+        )
+
     @staticmethod
-    def from_env():
+    def from_env(parallel_info, start_port, remote_server_port):
+        worker_info_port_num = parallel_info.worker_info_port_num
+        local_rank = parallel_info.local_rank
+        world_rank = parallel_info.world_rank
+
         info = WorkerInfo(
             ip=socket.gethostbyname(socket.gethostname()),
-            server_port=WorkerInfo.server_port_offset(g_parallel_info.local_rank),
-            gang_hb_port=WorkerInfo.gang_hb_port_offset(g_parallel_info.local_rank),
-            http_port=WorkerInfo.http_port_offset(g_parallel_info.local_rank),
+            server_port=WorkerInfo.server_port_offset(
+                local_rank, start_port, worker_info_port_num
+            ),
+            gang_hb_port=WorkerInfo.gang_hb_port_offset(
+                local_rank, start_port, worker_info_port_num
+            ),
+            http_port=WorkerInfo.http_port_offset(
+                local_rank, start_port, worker_info_port_num
+            ),
             rpc_server_port=WorkerInfo.rpc_server_port_offset(
-                g_parallel_info.local_rank
+                local_rank, start_port, worker_info_port_num
+            ),
+            embedding_rpc_server_port=WorkerInfo.embedding_rpc_server_port_offset(
+                local_rank, start_port, worker_info_port_num
             ),
             remote_rpc_server_port=WorkerInfo.rpc_server_port_offset(
-                g_parallel_info.local_rank, int(os.environ.get("REMOTE_SERVER_PORT", 0))
+                local_rank, remote_server_port, worker_info_port_num
             ),
             cache_store_listen_port=WorkerInfo.cache_store_listen_port_offset(
-                g_parallel_info.local_rank
+                local_rank, start_port, worker_info_port_num
             ),
             cache_store_connect_port=WorkerInfo.cache_store_listen_port_offset(
-                g_parallel_info.local_rank, int(os.environ.get("REMOTE_SERVER_PORT", 0))
+                local_rank, remote_server_port, worker_info_port_num
             ),
             cache_store_rdma_listen_port=WorkerInfo.cache_store_rdma_listen_port_offset(
-                g_parallel_info.local_rank
+                local_rank, start_port, worker_info_port_num
             ),
             cache_store_rdma_connect_port=WorkerInfo.cache_store_rdma_listen_port_offset(
-                g_parallel_info.local_rank, int(os.environ.get("REMOTE_SERVER_PORT", 0))
+                local_rank, remote_server_port, worker_info_port_num
             ),
             backend_server_port=WorkerInfo.backend_server_port_offset(
-                g_parallel_info.local_rank
+                local_rank, start_port, worker_info_port_num
             ),
-            local_rank=g_parallel_info.local_rank,
-            world_rank=g_parallel_info.world_rank,
+            local_rank=local_rank,
+            world_rank=world_rank,
             name="",
             info=None,
         )
+        logging.info(
+            f"WorkerInfo from_env: {info}, worker_info_port_num: {worker_info_port_num}, local_rank: {local_rank}"
+        )
+
         return info
 
     @staticmethod
-    def self_server_port():
-        return StaticConfig.server_config.start_port
+    def server_port_offset(
+        local_rank: int = 0, server_port: int = 0, worker_info_port_num: int = 0
+    ) -> int:
+        base_port = server_port
+        return base_port + local_rank * worker_info_port_num
 
     @staticmethod
-    def server_port_offset(local_rank: int, server_port: int = -1) -> int:
-        if server_port != -1:
-            base_port = server_port
-        else:
-            base_port = WorkerInfo.self_server_port()
-        return base_port + local_rank * WORKER_INFO_PORT_NUM
+    def rpc_server_port_offset(
+        local_rank: int = 0, server_port: int = 0, worker_info_port_num: int = 0
+    ) -> int:
+        return (
+            WorkerInfo.server_port_offset(local_rank, server_port, worker_info_port_num)
+            + 1
+        )
 
     @staticmethod
-    def rpc_server_port_offset(local_rank: int, server_port: int = -1) -> int:
-        return WorkerInfo.server_port_offset(local_rank, server_port) + 1
+    def cache_store_listen_port_offset(
+        local_rank: int = 0, server_port: int = 0, worker_info_port_num: int = 0
+    ) -> int:
+        return (
+            WorkerInfo.server_port_offset(local_rank, server_port, worker_info_port_num)
+            + 2
+        )
 
     @staticmethod
-    def cache_store_listen_port_offset(local_rank: int, server_port: int = -1) -> int:
-        return WorkerInfo.server_port_offset(local_rank, server_port) + 2
-
-    @staticmethod
-    def gang_hb_port_offset(local_rank: int, server_port: int = -1) -> int:
-        return WorkerInfo.server_port_offset(local_rank, server_port) + 3
+    def gang_hb_port_offset(
+        local_rank: int = 0, server_port: int = 0, worker_info_port_num: int = 0
+    ) -> int:
+        return (
+            WorkerInfo.server_port_offset(local_rank, server_port, worker_info_port_num)
+            + 3
+        )
 
     @staticmethod
     def cache_store_rdma_listen_port_offset(
-        local_rank: int, server_port: int = -1
+        local_rank: int = 0, server_port: int = 0, worker_info_port_num: int = 0
     ) -> int:
-        return WorkerInfo.server_port_offset(local_rank, server_port) + 4
+        return (
+            WorkerInfo.server_port_offset(local_rank, server_port, worker_info_port_num)
+            + 4
+        )
 
     @staticmethod
-    def http_port_offset(local_rank: int, server_port: int = -1) -> int:
-        return WorkerInfo.server_port_offset(local_rank, server_port) + 5
+    def http_port_offset(
+        local_rank: int = 0, server_port: int = 0, worker_info_port_num: int = 0
+    ) -> int:
+        return (
+            WorkerInfo.server_port_offset(local_rank, server_port, worker_info_port_num)
+            + 5
+        )
 
     @staticmethod
-    def backend_server_port_offset(local_rank: int, server_port: int = -1) -> int:
-        return WorkerInfo.server_port_offset(local_rank, server_port) + 6
+    def backend_server_port_offset(
+        local_rank: int = 0, server_port: int = 0, worker_info_port_num: int = 0
+    ) -> int:
+        return (
+            WorkerInfo.server_port_offset(local_rank, server_port, worker_info_port_num)
+            + 6
+        )
 
-    # used for ut
-    def reload(self):
-        new_info = self.from_env()
+    @staticmethod
+    def embedding_rpc_server_port_offset(
+        local_rank: int = 0, server_port: int = 0, worker_info_port_num: int = 0
+    ) -> int:
+        return (
+            WorkerInfo.server_port_offset(local_rank, server_port, worker_info_port_num)
+            + 7
+        )
+
+    def reload(self, parallel_info, start_port, remote_server_port):
+        # Use parallel_info.local_rank and parallel_info.world_rank instead of
+        # self.local_rank/self.world_rank, because in multi-process scenarios,
+        # parallel_info is reloaded from environment variables and reflects the
+        # correct rank for the current process.
+        new_info = self.from_env(
+            parallel_info,
+            start_port,
+            remote_server_port,
+        )
         self.ip = new_info.ip
         self.server_port = new_info.server_port
         self.gang_hb_port = new_info.gang_hb_port
@@ -318,63 +401,146 @@ class WorkerInfo(object):
         self.remote_rpc_server_port = new_info.remote_rpc_server_port
         self.cache_store_listen_port = new_info.cache_store_listen_port
         self.cache_store_connect_port = new_info.cache_store_connect_port
+        self.cache_store_rdma_listen_port = new_info.cache_store_rdma_listen_port
+        self.cache_store_rdma_connect_port = new_info.cache_store_rdma_connect_port
         self.rpc_server_port = new_info.rpc_server_port
         self.backend_server_port = new_info.backend_server_port
+        self.embedding_rpc_server_port = new_info.embedding_rpc_server_port
         self.local_rank = new_info.local_rank
         self.world_rank = new_info.world_rank
         self.name = new_info.name
         self.info = new_info.info
+        logging.info(f"WorkerInfo reload: {self}")
 
     def __str__(self):
         return f"""
-        WorkerInfo: [ip={self.ip} server_port={self.server_port} gang_hb_port={self.gang_hb_port}
-        http_port={self.http_port} rpc_port={self.rpc_server_port} backend_server_port={self.backend_server_port}
-        cache_store_listen_port={self.cache_store_listen_port} cache_store_connect_port={self.cache_store_connect_port} remote_rpc_server_port={self.remote_rpc_server_port}
+        WorkerInfo: [ip={self.ip}
+        server_port={self.server_port} (offset 0)
+        rpc_server_port={self.rpc_server_port} (offset 1)
+        cache_store_listen_port={self.cache_store_listen_port} (offset 2)
+        gang_hb_port={self.gang_hb_port} (offset 3)
+        cache_store_rdma_listen_port={self.cache_store_rdma_listen_port} (offset 4)
+        http_port={self.http_port} (offset 5)
+        backend_server_port={self.backend_server_port} (offset 6)
+        embedding_rpc_server_port={self.embedding_rpc_server_port} (offset 7)
+        remote_rpc_server_port={self.remote_rpc_server_port}
+        cache_store_connect_port={self.cache_store_connect_port}
+        cache_store_rdma_connect_port={self.cache_store_rdma_connect_port}
         local_rank={self.local_rank} world_rank={self.world_rank} name={self.name} info={self.info} ]
         """
 
 
-g_worker_info = WorkerInfo.from_env()
-
-
-@dataclass
 class MasterInfo:
-    ip: str
-    th_nccl_port: int
-    tp_nccl_port: int
-    nccl_op_port: int
-    sp_gpt_nccl_port: int
-    dp_tp_nccl_port: int
-    ffn_tp_nccl_port: int
+    """Master 节点的 NCCL 通信端口信息
+
+    所有端口都是根据 base_port 和并行配置字段动态计算的 property。
+    设置 base_port、dp_rank、ffn_sp_size、tp_size 后，所有端口会自动计算。
+    """
+
+    def __init__(
+        self,
+        ip: str = "",
+        base_port: int = 0,
+        dp_rank: int = 0,
+        ffn_sp_size: int = 1,
+        tp_size: int = 1,
+    ):
+        self._ip = ip
+        self._base_port = base_port
+        self._dp_rank = dp_rank
+        self._ffn_sp_size = ffn_sp_size
+        self._tp_size = tp_size
+
+    @property
+    def ip(self) -> str:
+        return self._ip
+
+    @ip.setter
+    def ip(self, value: str):
+        self._ip = value
+
+    @property
+    def base_port(self) -> int:
+        return self._base_port
+
+    @base_port.setter
+    def base_port(self, value: int):
+        self._base_port = value
+
+    @property
+    def dp_rank(self) -> int:
+        return self._dp_rank
+
+    @dp_rank.setter
+    def dp_rank(self, value: int):
+        self._dp_rank = value
+
+    @property
+    def ffn_sp_size(self) -> int:
+        return self._ffn_sp_size
+
+    @ffn_sp_size.setter
+    def ffn_sp_size(self, value: int):
+        self._ffn_sp_size = value
+
+    @property
+    def tp_size(self) -> int:
+        return self._tp_size
+
+    @tp_size.setter
+    def tp_size(self, value: int):
+        self._tp_size = value
+
+    @property
+    def dp_tp_nccl_port(self) -> int:
+        """使用原始 base_port 计算"""
+        return self._base_port - 10
+
+    @property
+    def th_nccl_port(self) -> int:
+        """使用原始 base_port 计算"""
+        return self._base_port - 11
+
+    @property
+    def tp_nccl_port(self) -> int:
+        """使用调整后的 base_port 计算（减去 dp_rank * MASTER_INFO_PORT_NUM）"""
+        adjusted_base_port = self._base_port - self._dp_rank * MASTER_INFO_PORT_NUM
+        return adjusted_base_port - 2
+
+    @property
+    def nccl_op_port(self) -> int:
+        """使用调整后的 base_port 计算（减去 dp_rank * MASTER_INFO_PORT_NUM）"""
+        adjusted_base_port = self._base_port - self._dp_rank * MASTER_INFO_PORT_NUM
+        return adjusted_base_port - 3
+
+    @property
+    def sp_gpt_nccl_port(self) -> int:
+        """使用调整后的 base_port 计算（减去 dp_rank * MASTER_INFO_PORT_NUM）"""
+        adjusted_base_port = self._base_port - self._dp_rank * MASTER_INFO_PORT_NUM
+        return adjusted_base_port - 4
+
+    @property
+    def ffn_tp_nccl_port(self) -> int:
+        """使用调整后的 base_port 计算（减去 dp_rank * MASTER_INFO_PORT_NUM）
+        如果 ffn_sp_size != tp_size，还需要额外调整
+        """
+        adjusted_base_port = self._base_port - self._dp_rank * MASTER_INFO_PORT_NUM
+        # note: reserve 4 ports for ffn_tp_nccl_port
+        if self._ffn_sp_size != self._tp_size:
+            adjusted_base_port -= self._ffn_sp_size
+        return adjusted_base_port - 5
+
+    def __str__(self):
+        return (
+            f"MasterInfo:[ ip={self._ip} base_port={self._base_port} "
+            f"th_nccl_port={self.th_nccl_port} tp_nccl_port={self.tp_nccl_port} "
+            f"nccl_op_port={self.nccl_op_port} sp_gpt_nccl_port={self.sp_gpt_nccl_port} "
+            f"dp_tp_nccl_port={self.dp_tp_nccl_port} ffn_tp_nccl_port={self.ffn_tp_nccl_port} ]"
+        )
 
 
-g_master_info = MasterInfo(
-    ip="",
-    th_nccl_port=0,
-    tp_nccl_port=0,
-    nccl_op_port=0,
-    sp_gpt_nccl_port=0,
-    dp_tp_nccl_port=0,
-    ffn_tp_nccl_port=0,
-)
-
-
-def update_master_info(ip: str, base_port: int):
-    g_master_info.ip = ip
-    g_master_info.dp_tp_nccl_port = base_port - 10
-    g_master_info.th_nccl_port = base_port - 11
-    base_port -= g_parallel_info.dp_rank * MASTER_INFO_PORT_NUM
-    g_master_info.tp_nccl_port = base_port - 2
-    g_master_info.nccl_op_port = base_port - 3
-    g_master_info.sp_gpt_nccl_port = base_port - 4
-    # note: reserve 4 ports for ffn_tp_nccl_port
-    g_master_info.ffn_tp_nccl_port = base_port - 5
-    if g_parallel_info.ffn_sp_size != g_parallel_info.tp_size:
-        base_port -= g_parallel_info.ffn_sp_size
-
-
-def total_need_port_num() -> int:
+def total_need_port_num(parallel_info: ParallelInfo) -> int:
     return (
-        MASTER_INFO_PORT_NUM * g_parallel_info.dp_size
-        + WORKER_INFO_PORT_NUM * g_parallel_info.tp_size
+        MASTER_INFO_PORT_NUM * parallel_info.dp_size
+        + parallel_info.worker_info_port_num * parallel_info.tp_size
     )
