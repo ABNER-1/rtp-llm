@@ -2,6 +2,7 @@
 #include "rtp_llm/cpp/core/allocator.h"
 #include "rtp_llm/cpp/cuda/cuda_host_utils.h"
 #include <mutex>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace rtp_llm {
@@ -85,6 +86,13 @@ public:
     void* doMalloc(size_t size) override;
     void* doMallocSync(size_t size) override;
     void  doFree(void* ptr) override;
+
+private:
+    void* doMallocWithTHP(size_t size);
+
+    size_t                            thp_threshold_bytes_;
+    std::unordered_map<void*, size_t> thp_allocations_;
+    std::mutex                        thp_mu_;
 };
 
 }  // namespace rtp_llm
