@@ -212,6 +212,7 @@ class WeightModule(ABC):
         device: str,
         load_config: LoadConfig,
         lora_name: str,
+        tensor_cache=None,
     ):
         try:
             raw_loras = self._load_raw_lora(
@@ -221,6 +222,7 @@ class WeightModule(ABC):
                 load_config,
                 lora_name,
                 load_config.compute_dtype,
+                tensor_cache=tensor_cache,
             )
         except Exception as e:
             logging.warning(
@@ -293,6 +295,7 @@ class WeightModule(ABC):
         load_config: LoadConfig,
         lora_name: str,
         data_type: torch.dtype,
+        tensor_cache=None,
     ):
         pass
 
@@ -389,14 +392,27 @@ class AtomicWeight(WeightModule):
         load_config: LoadConfig,
         lora_name: str,
         data_type: torch.dtype,
+        tensor_cache=None,
     ):
         if self.lora_a_process_func is None or self.lora_b_process_func is None:
             return {}
         a_res = self._load_lora_a(
-            database, layer_id, device, load_config, lora_name, data_type
+            database,
+            layer_id,
+            device,
+            load_config,
+            lora_name,
+            data_type,
+            tensor_cache=tensor_cache,
         )
         b_res = self._load_lora_b(
-            database, layer_id, device, load_config, lora_name, data_type
+            database,
+            layer_id,
+            device,
+            load_config,
+            lora_name,
+            data_type,
+            tensor_cache=tensor_cache,
         )
         a_res.update(b_res)
         return a_res
@@ -457,6 +473,7 @@ class AtomicWeight(WeightModule):
         load_config: LoadConfig,
         lora_name: str,
         data_type: torch.dtype,
+        tensor_cache=None,
     ):
         assert self.lora_a_process_func is not None
         before_merge_tensors = []
@@ -466,16 +483,15 @@ class AtomicWeight(WeightModule):
             )
             tensor_name = self.lora_tensor_name(layer_id, ckpt_name)
             try:
-                before_merge_tensors.append(
-                    ckpt_weight.merge_fun(
-                        [
-                            x
-                            for x in database.load_lora_tensor(
-                                lora_name, tensor_name, data_type
-                            )
-                        ]
+                if tensor_cache is not None:
+                    tensors = database.load_lora_tensor_from_cache(
+                        tensor_cache, tensor_name, data_type
                     )
-                )
+                else:
+                    tensors = database.load_lora_tensor(
+                        lora_name, tensor_name, data_type
+                    )
+                before_merge_tensors.append(ckpt_weight.merge_fun([x for x in tensors]))
             except:
                 logging.warning(
                     f"load {self.name} lora A failed: {tensor_name}, {traceback.format_exc()}"
@@ -497,6 +513,7 @@ class AtomicWeight(WeightModule):
         load_config: LoadConfig,
         lora_name: str,
         data_type: torch.dtype,
+        tensor_cache=None,
     ):
         assert self.lora_b_process_func is not None
         before_merge_tensors = []
@@ -506,16 +523,15 @@ class AtomicWeight(WeightModule):
             )
             tensor_name = self.lora_tensor_name(layer_id, ckpt_name)
             try:
-                before_merge_tensors.append(
-                    ckpt_weight.merge_fun(
-                        [
-                            x
-                            for x in database.load_lora_tensor(
-                                lora_name, tensor_name, data_type
-                            )
-                        ]
+                if tensor_cache is not None:
+                    tensors = database.load_lora_tensor_from_cache(
+                        tensor_cache, tensor_name, data_type
                     )
-                )
+                else:
+                    tensors = database.load_lora_tensor(
+                        lora_name, tensor_name, data_type
+                    )
+                before_merge_tensors.append(ckpt_weight.merge_fun([x for x in tensors]))
             except:
                 logging.warning(
                     f"load {self.name} lora B failed: {tensor_name}, {traceback.format_exc()}"
@@ -821,6 +837,7 @@ class CompositeWeight(WeightModule):
         load_config: LoadConfig,
         lora_name: str,
         data_type: torch.dtype,
+        tensor_cache=None,
     ):
         raw_tensors = {}
         for name, sub_weight in self.sub_weights.items():
@@ -831,6 +848,7 @@ class CompositeWeight(WeightModule):
                 load_config,
                 lora_name=lora_name,
                 data_type=data_type,
+                tensor_cache=tensor_cache,
             )
             raw_tensors.update({name: sub_tensors})
         return raw_tensors

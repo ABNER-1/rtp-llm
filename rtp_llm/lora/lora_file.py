@@ -90,6 +90,55 @@ class LoraCkpt:
                     tensors.append(ckpt_file.load_tensor(tensor_name, data_type))
         return tensors
 
+    def preload_lora_tensors(
+        self, lora_name: str, device: str = "cpu"
+    ) -> Dict[str, torch.Tensor]:
+        """Preload all tensors for a given LoRA adapter in one batch I/O operation.
+
+        Uses CkptFileInfo.load_tensors() (with fast_safetensors Direct I/O when available)
+        to read the entire safetensors file at once, instead of opening the file 640+ times
+        for individual tensor reads.
+
+        Args:
+            lora_name: The adapter name to load tensors for.
+            device: Target device for tensors (default "cpu").
+
+        Returns:
+            A dict mapping tensor_name -> tensor for all tensors in the adapter's checkpoint files.
+        """
+        all_tensors: Dict[str, torch.Tensor] = {}
+        for key, value in self.LoraFileList.items():
+            if key.name == lora_name:
+                for ckpt_file in value:
+                    all_tensors.update(
+                        ckpt_file.load_tensors(device=device, direct_io=True)
+                    )
+        return all_tensors
+
+    def load_lora_tensor_from_cache(
+        self,
+        tensor_cache: Dict[str, torch.Tensor],
+        tensor_name: str,
+        data_type: torch.dtype,
+    ) -> List[torch.Tensor]:
+        """Load a single tensor from a pre-loaded tensor cache dict.
+
+        This is the cache-backed counterpart of load_lora_tensor(). Instead of opening
+        the safetensors file on disk, it retrieves the tensor from the in-memory cache
+        produced by preload_lora_tensors().
+
+        Args:
+            tensor_cache: The dict returned by preload_lora_tensors().
+            tensor_name: The name of the tensor to retrieve.
+            data_type: The desired dtype to cast the tensor to.
+
+        Returns:
+            A list containing the tensor (cast to data_type), or an empty list if not found.
+        """
+        if tensor_name in tensor_cache:
+            return [tensor_cache[tensor_name].to(data_type)]
+        return []
+
     def load_lora(self, config_name: str, lora_path: str):
         for key, _ in self.LoraFileList.items():
             if key.name == config_name:

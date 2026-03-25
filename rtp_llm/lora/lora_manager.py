@@ -1,5 +1,6 @@
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, Optional
 
 from rtp_llm.async_decoder_engine.base_engine import BaseEngine
@@ -32,8 +33,7 @@ class LoraManager:
             model_lora_infos = self.engine_.model.model_config.lora_infos
             if model_lora_infos is not None and len(model_lora_infos) > 1:
                 logging.info(f"model_lora_infos is {model_lora_infos}")
-                for key, value in model_lora_infos.items():
-                    self.add_lora(key, value)
+                self._batch_load_loras(model_lora_infos)
         logging.info(f"update lora weights time: {timer.cost_ms() / 1000 :.2f} s")
 
     def _check_loraInfo_size(self, lora_infos: Dict[str, str]):
@@ -68,6 +68,89 @@ class LoraManager:
                 ):
                     remove_lora_map[adapter_name] = lora_path
             return remove_lora_map
+
+    def _batch_load_loras(self, model_lora_infos: Dict[str, str]):
+        """Batch load multiple LoRA adapters with parallel I/O.
+
+        Phase 1: Serial database registration - register all adapters to the database
+                 sequentially (each is fast: file discovery + config parsing).
+        Phase 2: Parallel I/O preload + weight assembly - each adapter's safetensors
+                 file is loaded in parallel via preload_lora_tensors(), then layer
+                 weights are assembled from the in-memory cache.
+        Phase 3: Serial cleanup + C++ registration - remove database entries and
+                 register weights to the C++ engine sequentially.
+        """
+        database = self.weights_loader_._load_config.database
+        num_layers = self.weights_loader_._load_config.num_layers
+        weight_style = self.weights_loader_._weights_info.weight_style
+
+        # Phase 1: Serial database registration (each is fast: ~0.01s)
+        lora_configs = {}
+        for adapter_name, lora_path in model_lora_infos.items():
+            database.load_lora(adapter_name, lora_path)
+            lora_configs[adapter_name] = database.get_lora_config(adapter_name)
+            logging.info(
+                f"registered adapter to database: {adapter_name}, "
+                f"rank={lora_configs[adapter_name].rank}"
+            )
+
+        # Phase 2: Parallel I/O preload + weight assembly
+        def _load_adapter_weights(adapter_name: str, lora_path: str):
+            """Load a single adapter's weights from pre-registered database entry."""
+            from rtp_llm.lora.lora_weights import LoRAWeights
+            from rtp_llm.utils.model_weight import WeightStyle
+
+            lora_config = lora_configs[adapter_name]
+            lora_weights = LoRAWeights(num_layers)
+            lora_weights.set_lora_rank(lora_config.rank)
+
+            if weight_style == WeightStyle.RTP_LLM_STYLE:
+                raise ValueError("load_lora_weights only support non-ft-style weight")
+
+            # Batch I/O: one load_tensors() call instead of 640+ safe_open() calls
+            tensor_cache = database.preload_lora_tensors(adapter_name, "cpu")
+            logging.info(
+                f"preloaded {len(tensor_cache)} tensors for adapter {adapter_name}"
+            )
+
+            for layer_id in range(num_layers):
+                result = self.weights_loader_._load_layer_lora_weights(
+                    adapter_name, layer_id, "cpu", tensor_cache=tensor_cache
+                )
+                for name, tensor in result.items():
+                    lora_weights.set_layer_weight(False, layer_id, name, tensor)
+
+            lora_weights.apply_scale(lora_config.lora_alpha / lora_config.rank)
+            del tensor_cache
+            return adapter_name, lora_path, lora_weights
+
+        max_workers = min(4, len(model_lora_infos))
+        loaded_results: Dict[str, Any] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_load_adapter_weights, k, v): k
+                for k, v in model_lora_infos.items()
+            }
+            for future in as_completed(futures):
+                adapter_name = futures[future]
+                try:
+                    name, path, weights = future.result()
+                    loaded_results[name] = (path, weights)
+                    logging.info(f"parallel loaded adapter: {name}")
+                except Exception as e:
+                    logging.error(f"failed to load adapter {adapter_name}: {e}")
+                    raise
+
+        # Phase 3: Serial cleanup + C++ registration
+        for adapter_name in model_lora_infos:
+            database.remove_lora(adapter_name)
+
+        for adapter_name, (lora_path, weights) in loaded_results.items():
+            self.lora_infos_[adapter_name] = lora_path
+            self.lora_cpp_wrapper_.add_lora(
+                adapter_name, weights.lora_a_weights, weights.lora_b_weights
+            )
+            logging.info(f"registered adapter to C++ engine: {adapter_name}")
 
     def add_lora(self, adapter_name: str, lora_path: str) -> Optional[LoraException]:
         with self.thread_lock_:

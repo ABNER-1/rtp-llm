@@ -106,12 +106,24 @@ class ModelLoader:
         if self._weights_info.weight_style == WeightStyle.RTP_LLM_STYLE:
             raise ValueError("load_lora_weights only support non-ft-style weight")
 
+        # Batch I/O optimization: preload all tensors from the safetensors file at once,
+        # replacing 640+ individual safe_open() calls with a single load_tensors() call.
+        tensor_cache = self._load_config.database.preload_lora_tensors(
+            adapter_name, device
+        )
+        logging.info(
+            f"preloaded {len(tensor_cache)} tensors for adapter {adapter_name}"
+        )
+
         for id in range(self._load_config.num_layers):
-            result = self._load_layer_lora_weights(adapter_name, id, device)
+            result = self._load_layer_lora_weights(
+                adapter_name, id, device, tensor_cache=tensor_cache
+            )
             for name, tensor in result.items():
                 lora_weights.set_layer_weight(False, id, name, tensor)
 
         lora_weights.apply_scale(lora_alpha / rank)  # apply scale
+        del tensor_cache  # release preloaded tensors from memory
         self._load_config.database.remove_lora(adapter_name)
         return lora_weights
 
@@ -527,7 +539,9 @@ class ModelLoader:
             weights.update(res)
         return weights
 
-    def _load_layer_lora_weights(self, lora_name: str, layer_id: int, device: str):
+    def _load_layer_lora_weights(
+        self, lora_name: str, layer_id: int, device: str, tensor_cache=None
+    ):
         assert isinstance(self._model_weights_info.layer_weights[0], list)
         layer_weights = self._model_weights_info.layer_weights[layer_id]
         weights = {}
@@ -538,6 +552,7 @@ class ModelLoader:
                 device,
                 self._load_config,
                 lora_name,
+                tensor_cache=tensor_cache,
             )
             weights.update(res)
         return weights
