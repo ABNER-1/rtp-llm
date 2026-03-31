@@ -77,7 +77,8 @@ void KVCacheMemoryConnector::checkLayerBlockStrideBytes() const {
 }
 
 void KVCacheMemoryConnector::initBlockPool() {
-    const auto memory_cache_size_mb = kv_cache_config_.memory_cache_size_mb;
+    autil::ScopedTime2 timer;
+    const auto         memory_cache_size_mb = kv_cache_config_.memory_cache_size_mb;
     RTP_LLM_CHECK_WITH_INFO(memory_cache_size_mb > 0,
                             "init block pool failed, memory size is invalid, memory size: %ld MB",
                             memory_cache_size_mb);
@@ -91,6 +92,10 @@ void KVCacheMemoryConnector::initBlockPool() {
 
     block_pool_ = createBlockPool(block_size, memory_cache_size_mb);
     RTP_LLM_CHECK_WITH_INFO(block_pool_ != nullptr, "init block pool failed, create block pool failed");
+    RTP_LLM_LOG_INFO("initBlockPool done, memory_cache_size_mb: %ld, block_size: %zu, latency: %ld ms",
+                     memory_cache_size_mb,
+                     block_size,
+                     timer.done_us() / 1000);
 }
 
 std::shared_ptr<AsyncMatchContext> KVCacheMemoryConnector::asyncMatch(const std::shared_ptr<KVCacheResource>& resource,
